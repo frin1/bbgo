@@ -7,15 +7,23 @@ import (
 	"io/ioutil"
 	"reflect"
 	"runtime"
+	"strings"
 
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v3"
 
 	"github.com/c9s/bbgo/pkg/datatype"
+	"github.com/c9s/bbgo/pkg/dynamic"
 	"github.com/c9s/bbgo/pkg/fixedpoint"
 	"github.com/c9s/bbgo/pkg/service"
 	"github.com/c9s/bbgo/pkg/types"
 )
+
+// DefaultFeeRate set the fee rate for most cases
+// BINANCE uses 0.1% for both maker and taker
+//  for BNB holders, it's 0.075% for both maker and taker
+// MAX uses 0.050% for maker and 0.15% for taker
+var DefaultFeeRate = fixedpoint.NewFromFloat(0.075 * 0.01)
 
 type PnLReporterConfig struct {
 	AverageCostBySymbols datatype.StringSlice `json:"averageCostBySymbols" yaml:"averageCostBySymbols"`
@@ -98,18 +106,64 @@ type Backtest struct {
 	EndTime   *types.LooseFormatTime `json:"endTime,omitempty" yaml:"endTime,omitempty"`
 
 	// RecordTrades is an option, if set to true, back-testing should record the trades into database
-	RecordTrades bool                       `json:"recordTrades,omitempty" yaml:"recordTrades,omitempty"`
-	Account      map[string]BacktestAccount `json:"account" yaml:"account"`
-	Symbols      []string                   `json:"symbols" yaml:"symbols"`
-	Sessions     []string                   `json:"sessions" yaml:"sessions"`
+	RecordTrades bool `json:"recordTrades,omitempty" yaml:"recordTrades,omitempty"`
+
+	// Deprecated:
+	// Account is deprecated, use Accounts instead
+	Account map[string]BacktestAccount `json:"account" yaml:"account"`
+
+	Accounts map[string]BacktestAccount `json:"accounts" yaml:"accounts"`
+	Symbols  []string                   `json:"symbols" yaml:"symbols"`
+	Sessions []string                   `json:"sessions" yaml:"sessions"`
+}
+
+func (b *Backtest) GetAccount(n string) BacktestAccount {
+	accountConfig, ok := b.Accounts[n]
+	if ok {
+		return accountConfig
+	}
+
+	accountConfig, ok = b.Account[n]
+	if ok {
+		return accountConfig
+	}
+
+	return DefaultBacktestAccount
 }
 
 type BacktestAccount struct {
-	// TODO: MakerFeeRate should replace the commission fields
-	MakerFeeRate fixedpoint.Value `json:"makerFeeRate"`
-	TakerFeeRate fixedpoint.Value `json:"takerFeeRate"`
+	MakerFeeRate fixedpoint.Value `json:"makerFeeRate,omitempty" yaml:"makerFeeRate,omitempty"`
+	TakerFeeRate fixedpoint.Value `json:"takerFeeRate,omitempty" yaml:"takerFeeRate,omitempty"`
 
-	Balances         BacktestAccountBalanceMap `json:"balances" yaml:"balances"`
+	Balances BacktestAccountBalanceMap `json:"balances" yaml:"balances"`
+}
+
+var DefaultBacktestAccount = BacktestAccount{
+	MakerFeeRate: fixedpoint.MustNewFromString("0.050%"),
+	TakerFeeRate: fixedpoint.MustNewFromString("0.075%"),
+	Balances: BacktestAccountBalanceMap{
+		"USDT": fixedpoint.NewFromFloat(10000),
+	},
+}
+
+type BA BacktestAccount
+
+func (b *BacktestAccount) UnmarshalYAML(value *yaml.Node) error {
+	bb := &BA{MakerFeeRate: DefaultFeeRate, TakerFeeRate: DefaultFeeRate}
+	if err := value.Decode(bb); err != nil {
+		return err
+	}
+	*b = BacktestAccount(*bb)
+	return nil
+}
+
+func (b *BacktestAccount) UnmarshalJSON(input []byte) error {
+	bb := &BA{MakerFeeRate: DefaultFeeRate, TakerFeeRate: DefaultFeeRate}
+	if err := json.Unmarshal(input, bb); err != nil {
+		return err
+	}
+	*b = BacktestAccount(*bb)
+	return nil
 }
 
 type BacktestAccountBalanceMap map[string]fixedpoint.Value
@@ -154,12 +208,68 @@ func GetNativeBuildTargetConfig() BuildTargetConfig {
 	}
 }
 
+type SyncSymbol struct {
+	Symbol  string `json:"symbol" yaml:"symbol"`
+	Session string `json:"session" yaml:"session"`
+}
+
+func (ss *SyncSymbol) UnmarshalYAML(unmarshal func(a interface{}) error) (err error) {
+	var s string
+	if err = unmarshal(&s); err == nil {
+		aa := strings.SplitN(s, ":", 2)
+		if len(aa) > 1 {
+			ss.Session = aa[0]
+			ss.Symbol = aa[1]
+		} else {
+			ss.Symbol = aa[0]
+		}
+		return nil
+	}
+
+	type localSyncSymbol SyncSymbol
+	var ssNew localSyncSymbol
+	if err = unmarshal(&ssNew); err == nil {
+		*ss = SyncSymbol(ssNew)
+		return nil
+	}
+
+	return err
+}
+
+func categorizeSyncSymbol(slice []SyncSymbol) (map[string][]string, []string) {
+	var rest []string
+	var m = make(map[string][]string)
+	for _, ss := range slice {
+		if len(ss.Session) > 0 {
+			m[ss.Session] = append(m[ss.Session], ss.Symbol)
+		} else {
+			rest = append(rest, ss.Symbol)
+		}
+	}
+	return m, rest
+}
+
 type SyncConfig struct {
 	// Sessions to sync, if ignored, all defined sessions will sync
 	Sessions []string `json:"sessions,omitempty" yaml:"sessions,omitempty"`
 
-	// Symbols is the list of symbol to sync, if ignored, symbols wlll be discovered by your existing crypto balances
-	Symbols []string `json:"symbols,omitempty" yaml:"symbols,omitempty"`
+	// Symbols is the list of session:symbol pair to sync, if ignored, symbols wlll be discovered by your existing crypto balances
+	// Valid formats are: {session}:{symbol},  {symbol} or in YAML object form {symbol: "BTCUSDT", session:"max" }
+	Symbols []SyncSymbol `json:"symbols,omitempty" yaml:"symbols,omitempty"`
+
+	// DepositHistory is for syncing deposit history
+	DepositHistory bool `json:"depositHistory" yaml:"depositHistory"`
+
+	// WithdrawHistory is for syncing withdraw history
+	WithdrawHistory bool `json:"withdrawHistory" yaml:"withdrawHistory"`
+
+	// RewardHistory is for syncing reward history
+	RewardHistory bool `json:"rewardHistory" yaml:"rewardHistory"`
+
+	// MarginHistory is for syncing margin related history: loans, repays, interests and liquidations
+	MarginHistory bool `json:"marginHistory" yaml:"marginHistory"`
+
+	MarginAssets []string `json:"marginAssets" yaml:"marginAssets"`
 
 	// Since is the date where you want to start syncing data
 	Since *types.LooseFormatTime `json:"since,omitempty"`
@@ -261,6 +371,38 @@ func (c *Config) YAML() ([]byte, error) {
 	enc.SetIndent(2)
 	err = enc.Encode(m)
 	return buf.Bytes(), err
+}
+
+func (c *Config) GetSignature() string {
+	var s string
+
+	var ps []string
+
+	// for single exchange strategy
+	if len(c.ExchangeStrategies) == 1 && len(c.CrossExchangeStrategies) == 0 {
+		mount := c.ExchangeStrategies[0].Mounts[0]
+		ps = append(ps, mount)
+
+		strategy := c.ExchangeStrategies[0].Strategy
+
+		id := strategy.ID()
+		ps = append(ps, id)
+
+		if symbol, ok := dynamic.LookupSymbolField(reflect.ValueOf(strategy)); ok {
+			ps = append(ps, symbol)
+		}
+	}
+
+	startTime := c.Backtest.StartTime.Time()
+	ps = append(ps, startTime.Format("2006-01-02"))
+
+	if c.Backtest.EndTime != nil {
+		endTime := c.Backtest.EndTime.Time()
+		ps = append(ps, endTime.Format("2006-01-02"))
+	}
+
+	s = strings.Join(ps, "_")
+	return s
 }
 
 type Stash map[string]interface{}

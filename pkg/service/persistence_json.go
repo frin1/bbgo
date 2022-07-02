@@ -38,7 +38,7 @@ func (store JsonStore) Reset() error {
 
 func (store JsonStore) Load(val interface{}) error {
 	if _, err := os.Stat(store.Directory); os.IsNotExist(err) {
-		if err2 := os.Mkdir(store.Directory, 0777); err2 != nil {
+		if err2 := os.MkdirAll(store.Directory, 0777); err2 != nil {
 			return err2
 		}
 	}
@@ -63,7 +63,7 @@ func (store JsonStore) Load(val interface{}) error {
 
 func (store JsonStore) Save(val interface{}) error {
 	if _, err := os.Stat(store.Directory); os.IsNotExist(err) {
-		if err2 := os.Mkdir(store.Directory, 0777); err2 != nil {
+		if err2 := os.MkdirAll(store.Directory, 0777); err2 != nil {
 			return err2
 		}
 	}
@@ -76,4 +76,3 @@ func (store JsonStore) Save(val interface{}) error {
 	p := filepath.Join(store.Directory, store.ID) + ".json"
 	return ioutil.WriteFile(p, data, 0666)
 }
-

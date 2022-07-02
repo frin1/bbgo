@@ -37,6 +37,7 @@ type AuthInteract struct {
 func (it *AuthInteract) Commands(interact *Interact) {
 	if it.Strict {
 		// generate a one-time-use otp
+		// pragma: allowlist nextline secret
 		if it.OneTimePasswordKey == nil {
 			opts := totp.GenerateOpts{
 				Issuer:      "interact",
@@ -48,7 +49,7 @@ func (it *AuthInteract) Commands(interact *Interact) {
 			if err != nil {
 				panic(err)
 			}
-
+			// pragma: allowlist nextline secret
 			it.OneTimePasswordKey = key
 		}
 		interact.Command("/auth", "authorize", func(reply Reply, session Session) error {
@@ -83,8 +84,19 @@ func (it *AuthInteract) Commands(interact *Interact) {
 			return ErrAuthenticationFailed
 		})
 	} else {
-		interact.Command("/auth", "authorize", func(reply Reply) error {
-			reply.Message("Enter your authentication code")
+		interact.Command("/auth", "authorize", func(reply Reply, session Session) error {
+			switch it.Mode {
+			case AuthModeToken:
+				session.SetAuthorizing(true)
+				reply.Message("Enter your authentication token")
+
+			case AuthModeOTP:
+				session.SetAuthorizing(true)
+				reply.Message("Enter your one-time password")
+
+			default:
+				log.Warnf("unexpected auth mode: %s", it.Mode)
+			}
 			return nil
 		}).NamedNext(StateAuthenticated, func(code string, reply Reply, session Session) error {
 			switch it.Mode {
@@ -95,6 +107,7 @@ func (it *AuthInteract) Commands(interact *Interact) {
 					session.SetAuthorized()
 					return nil
 				}
+				reply.Message("Incorrect authentication token")
 
 			case AuthModeOTP:
 				if totp.Validate(code, it.OneTimePasswordKey.Secret()) {
@@ -103,9 +116,12 @@ func (it *AuthInteract) Commands(interact *Interact) {
 					session.SetAuthorized()
 					return nil
 				}
+				reply.Message("Incorrect one-time pass code")
+
+			default:
+				log.Warnf("unexpected auth mode: %s", it.Mode)
 			}
 
-			reply.Message("Incorrect authentication code")
 			return ErrAuthenticationFailed
 		})
 	}

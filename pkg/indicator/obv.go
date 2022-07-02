@@ -14,6 +14,7 @@ On-Balance Volume (OBV) Definition
 */
 //go:generate callbackgen -type OBV
 type OBV struct {
+	types.SeriesBase
 	types.IntervalWindow
 	Values   types.Float64Slice
 	PrePrice float64
@@ -22,11 +23,9 @@ type OBV struct {
 	UpdateCallbacks []func(value float64)
 }
 
-func (inc *OBV) Update(kLine types.KLine, priceF KLinePriceMapper) {
-	price := priceF(kLine)
-	volume := kLine.Volume.Float64()
-
+func (inc *OBV) Update(price, volume float64) {
 	if len(inc.Values) == 0 {
+		inc.SeriesBase.Series = inc
 		inc.PrePrice = price
 		inc.Values.Push(volume)
 		return
@@ -46,18 +45,26 @@ func (inc *OBV) Last() float64 {
 	return inc.Values[len(inc.Values)-1]
 }
 
-func (inc *OBV) calculateAndUpdate(kLines []types.KLine) {
-	var priceF = KLineClosePriceMapper
+func (inc *OBV) Index(i int) float64 {
+	if len(inc.Values)-i <= 0 {
+		return 0.0
+	}
+	return inc.Values[len(inc.Values)-i-1]
+}
 
+var _ types.SeriesExtend = &OBV{}
+
+func (inc *OBV) calculateAndUpdate(kLines []types.KLine) {
 	for _, k := range kLines {
-		if inc.EndTime != zeroTime && k.EndTime.Before(inc.EndTime) {
+		if inc.EndTime != zeroTime && !k.EndTime.After(inc.EndTime) {
 			continue
 		}
-		inc.Update(k, priceF)
+		inc.Update(k.Close.Float64(), k.Volume.Float64())
 	}
 	inc.EmitUpdate(inc.Last())
 	inc.EndTime = kLines[len(kLines)-1].EndTime.Time()
 }
+
 func (inc *OBV) handleKLineWindowUpdate(interval types.Interval, window types.KLineWindow) {
 	if inc.Interval != interval {
 		return

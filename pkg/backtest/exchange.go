@@ -30,8 +30,11 @@ package backtest
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 
 	"github.com/c9s/bbgo/pkg/cache"
 
@@ -41,6 +44,8 @@ import (
 	"github.com/c9s/bbgo/pkg/service"
 	"github.com/c9s/bbgo/pkg/types"
 )
+
+var log = logrus.WithField("cmd", "backtest")
 
 var ErrUnimplemented = errors.New("unimplemented method")
 
@@ -53,7 +58,7 @@ type Exchange struct {
 	account *types.Account
 	config  *bbgo.Backtest
 
-	userDataStream, marketDataStream *Stream
+	UserDataStream, MarketDataStream types.StandardStreamEmitter
 
 	trades      map[string][]types.Trade
 	tradesMutex sync.Mutex
@@ -65,6 +70,20 @@ type Exchange struct {
 	matchingBooksMutex sync.Mutex
 
 	markets types.MarketMap
+}
+
+func (e *Exchange) QueryOrder(ctx context.Context, q types.OrderQuery) (*types.Order, error) {
+	book := e.matchingBooks[q.Symbol]
+	oid, err := strconv.ParseUint(q.OrderID, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	order, ok := book.getOrder(oid)
+	if ok {
+		return &order, nil
+	}
+	return nil, nil
 }
 
 func NewExchange(sourceName types.ExchangeName, sourceExchange types.Exchange, srv *service.BacktestService, config *bbgo.Backtest) (*Exchange, error) {
@@ -83,7 +102,7 @@ func NewExchange(sourceName types.ExchangeName, sourceExchange types.Exchange, s
 		endTime = time.Now()
 	}
 
-	configAccount := config.Account[sourceName.String()]
+	configAccount := config.GetAccount(sourceName.String())
 
 	account := &types.Account{
 		MakerFeeRate: configAccount.MakerFeeRate,
@@ -140,19 +159,22 @@ func (e *Exchange) addMatchingBook(symbol string, market types.Market) {
 
 func (e *Exchange) _addMatchingBook(symbol string, market types.Market) {
 	e.matchingBooks[symbol] = &SimplePriceMatching{
-		CurrentTime: e.startTime,
-		Account:     e.account,
-		Market:      market,
+		CurrentTime:  e.startTime,
+		Account:      e.account,
+		Market:       market,
+		closedOrders: make(map[uint64]types.Order),
 	}
 }
 
 func (e *Exchange) NewStream() types.Stream {
-	return &Stream{exchange: e}
+	return &types.BacktestStream{
+		StandardStreamEmitter: &types.StandardStream{},
+	}
 }
 
 func (e *Exchange) SubmitOrders(ctx context.Context, orders ...types.SubmitOrder) (createdOrders types.OrderSlice, err error) {
-	if e.userDataStream == nil {
-		return createdOrders, fmt.Errorf("SubmitOrders should be called after userDataStream been initialized")
+	if e.UserDataStream == nil {
+		return createdOrders, fmt.Errorf("SubmitOrders should be called after UserDataStream been initialized")
 	}
 	for _, order := range orders {
 		symbol := order.Symbol
@@ -175,7 +197,7 @@ func (e *Exchange) SubmitOrders(ctx context.Context, orders ...types.SubmitOrder
 				e.addClosedOrder(*createdOrder)
 			}
 
-			e.userDataStream.EmitOrderUpdate(*createdOrder)
+			e.UserDataStream.EmitOrderUpdate(*createdOrder)
 		}
 	}
 
@@ -201,8 +223,8 @@ func (e *Exchange) QueryClosedOrders(ctx context.Context, symbol string, since, 
 }
 
 func (e *Exchange) CancelOrders(ctx context.Context, orders ...types.Order) error {
-	if e.userDataStream == nil {
-		return fmt.Errorf("CancelOrders should be called after userDataStream been initialized")
+	if e.UserDataStream == nil {
+		return fmt.Errorf("CancelOrders should be called after UserDataStream been initialized")
 	}
 	for _, order := range orders {
 		matching, ok := e.matchingBook(order.Symbol)
@@ -214,7 +236,7 @@ func (e *Exchange) CancelOrders(ctx context.Context, orders ...types.Order) erro
 			return err
 		}
 
-		e.userDataStream.EmitOrderUpdate(canceledOrder)
+		e.UserDataStream.EmitOrderUpdate(canceledOrder)
 	}
 
 	return nil
@@ -281,11 +303,11 @@ func (e *Exchange) QueryMarkets(ctx context.Context) (types.MarketMap, error) {
 	return e.markets, nil
 }
 
-func (e Exchange) QueryDepositHistory(ctx context.Context, asset string, since, until time.Time) (allDeposits []types.Deposit, err error) {
+func (e *Exchange) QueryDepositHistory(ctx context.Context, asset string, since, until time.Time) (allDeposits []types.Deposit, err error) {
 	return nil, nil
 }
 
-func (e Exchange) QueryWithdrawHistory(ctx context.Context, asset string, since, until time.Time) (allWithdraws []types.Withdraw, err error) {
+func (e *Exchange) QueryWithdrawHistory(ctx context.Context, asset string, since, until time.Time) (allWithdraws []types.Withdraw, err error) {
 	return nil, nil
 }
 
@@ -297,38 +319,43 @@ func (e *Exchange) matchingBook(symbol string) (*SimplePriceMatching, bool) {
 }
 
 func (e *Exchange) InitMarketData() {
-	e.userDataStream.OnTradeUpdate(func(trade types.Trade) {
+	e.UserDataStream.OnTradeUpdate(func(trade types.Trade) {
 		e.addTrade(trade)
 	})
 
 	e.matchingBooksMutex.Lock()
 	for _, matching := range e.matchingBooks {
-		matching.OnTradeUpdate(e.userDataStream.EmitTradeUpdate)
-		matching.OnOrderUpdate(e.userDataStream.EmitOrderUpdate)
-		matching.OnBalanceUpdate(e.userDataStream.EmitBalanceUpdate)
+		matching.OnTradeUpdate(e.UserDataStream.EmitTradeUpdate)
+		matching.OnOrderUpdate(e.UserDataStream.EmitOrderUpdate)
+		matching.OnBalanceUpdate(e.UserDataStream.EmitBalanceUpdate)
 	}
 	e.matchingBooksMutex.Unlock()
-
 }
 
-func (e *Exchange) GetMarketData() (chan types.KLine, error) {
+func (e *Exchange) SubscribeMarketData(extraIntervals ...types.Interval) (chan types.KLine, error) {
 	log.Infof("collecting backtest configurations...")
 
 	loadedSymbols := map[string]struct{}{}
 	loadedIntervals := map[types.Interval]struct{}{
 		// 1m interval is required for the backtest matching engine
 		types.Interval1m: {},
-		types.Interval1d: {},
 	}
-	for _, sub := range e.marketDataStream.Subscriptions {
+
+	for _, it := range extraIntervals {
+		loadedIntervals[it] = struct{}{}
+	}
+
+	// collect subscriptions
+	for _, sub := range e.MarketDataStream.GetSubscriptions() {
 		loadedSymbols[sub.Symbol] = struct{}{}
 
 		switch sub.Channel {
 		case types.KLineChannel:
-			loadedIntervals[types.Interval(sub.Options.Interval)] = struct{}{}
+			loadedIntervals[sub.Options.Interval] = struct{}{}
 
 		default:
-			return nil, fmt.Errorf("stream channel %s is not supported in backtest", sub.Channel)
+			// Since Environment is not yet been injected at this point, no hard error
+			log.Errorf("stream channel %s is not supported in backtest", sub.Channel)
 		}
 	}
 
@@ -365,11 +392,11 @@ func (e *Exchange) ConsumeKLine(k types.KLine) {
 		matching.processKLine(k)
 	}
 
-	e.marketDataStream.EmitKLineClosed(k)
+	e.MarketDataStream.EmitKLineClosed(k)
 }
 
 func (e *Exchange) CloseMarketData() error {
-	if err := e.marketDataStream.Close(); err != nil {
+	if err := e.MarketDataStream.Close(); err != nil {
 		log.WithError(err).Error("stream close error")
 		return err
 	}

@@ -8,6 +8,50 @@ import (
 	"gonum.org/v1/gonum/stat"
 )
 
+// Super basic Series type that simply holds the float64 data
+// with size limit (the only difference compare to float64slice)
+type Queue struct {
+	SeriesBase
+	arr  []float64
+	size int
+}
+
+func NewQueue(size int) *Queue {
+	out := &Queue{
+		arr:  make([]float64, 0, size),
+		size: size,
+	}
+	out.SeriesBase.Series = out
+	return out
+}
+
+func (inc *Queue) Last() float64 {
+	if len(inc.arr) == 0 {
+		return 0
+	}
+	return inc.arr[len(inc.arr)-1]
+}
+
+func (inc *Queue) Index(i int) float64 {
+	if len(inc.arr)-i-1 < 0 {
+		return 0
+	}
+	return inc.arr[len(inc.arr)-i-1]
+}
+
+func (inc *Queue) Length() int {
+	return len(inc.arr)
+}
+
+func (inc *Queue) Update(v float64) {
+	inc.arr = append(inc.arr, v)
+	if len(inc.arr) > inc.size {
+		inc.arr = inc.arr[len(inc.arr)-inc.size:]
+	}
+}
+
+var _ SeriesExtend = &Queue{}
+
 // Float64Indicator is the indicators (SMA and EWMA) that we want to use are returning float64 data.
 type Float64Indicator interface {
 	Last() float64
@@ -20,6 +64,56 @@ type Series interface {
 	Last() float64
 	Index(int) float64
 	Length() int
+}
+
+type SeriesExtend interface {
+	Series
+	Sum(limit ...int) float64
+	Mean(limit ...int) float64
+	Abs() SeriesExtend
+	Predict(lookback int, offset ...int) float64
+	NextCross(b Series, lookback int) (int, float64, bool)
+	CrossOver(b Series) BoolSeries
+	CrossUnder(b Series) BoolSeries
+	Highest(lookback int) float64
+	Lowest(lookback int) float64
+	Add(b interface{}) SeriesExtend
+	Minus(b interface{}) SeriesExtend
+	Div(b interface{}) SeriesExtend
+	Mul(b interface{}) SeriesExtend
+	Dot(b interface{}, limit ...int) float64
+	Array(limit ...int) (result []float64)
+	Reverse(limit ...int) (result Float64Slice)
+	Change(offset ...int) SeriesExtend
+	PercentageChange(offset ...int) SeriesExtend
+	Stdev(params ...int) float64
+	Rolling(window int) *RollingResult
+	Shift(offset int) SeriesExtend
+	Skew(length int) float64
+	Variance(length int) float64
+	Covariance(b Series, length int) float64
+	Correlation(b Series, length int, method ...CorrFunc) float64
+	Rank(length int) SeriesExtend
+}
+
+type SeriesBase struct {
+	Series
+}
+
+func NewSeries(a Series) SeriesExtend {
+	return &SeriesBase{
+		Series: a,
+	}
+}
+
+type UpdatableSeries interface {
+	Series
+	Update(float64)
+}
+
+type UpdatableSeriesExtend interface {
+	SeriesExtend
+	Update(float64)
 }
 
 // The interface maps to pinescript basic type `series` for bool type
@@ -79,8 +173,8 @@ func (a *AbsResult) Length() int {
 }
 
 // Return series that having all the elements positive
-func Abs(a Series) Series {
-	return &AbsResult{a}
+func Abs(a Series) SeriesExtend {
+	return NewSeries(&AbsResult{a})
 }
 
 var _ Series = &AbsResult{}
@@ -89,8 +183,8 @@ func Predict(a Series, lookback int, offset ...int) float64 {
 	if a.Length() < lookback {
 		lookback = a.Length()
 	}
-	x := make([]float64, lookback, lookback)
-	y := make([]float64, lookback, lookback)
+	x := make([]float64, lookback)
+	y := make([]float64, lookback)
 	var weights []float64
 	for i := 0; i < lookback; i++ {
 		x[i] = float64(i)
@@ -117,9 +211,9 @@ func NextCross(a Series, b Series, lookback int) (int, float64, bool) {
 	if b.Length() < lookback {
 		lookback = b.Length()
 	}
-	x := make([]float64, lookback, lookback)
-	y1 := make([]float64, lookback, lookback)
-	y2 := make([]float64, lookback, lookback)
+	x := make([]float64, lookback)
+	y1 := make([]float64, lookback)
+	y2 := make([]float64, lookback)
 	var weights []float64
 	for i := 0; i < lookback; i++ {
 		x[i] = float64(i)
@@ -245,29 +339,29 @@ type AddSeriesResult struct {
 }
 
 // Add two series, result[i] = a[i] + b[i]
-func Add(a interface{}, b interface{}) Series {
+func Add(a interface{}, b interface{}) SeriesExtend {
 	var aa Series
 	var bb Series
 
-	switch a.(type) {
+	switch tp := a.(type) {
 	case float64:
-		aa = NumberSeries(a.(float64))
+		aa = NumberSeries(tp)
 	case Series:
-		aa = a.(Series)
+		aa = tp
 	default:
 		panic("input should be either *Series or float64")
 
 	}
-	switch b.(type) {
+	switch tp := b.(type) {
 	case float64:
-		bb = NumberSeries(b.(float64))
+		bb = NumberSeries(tp)
 	case Series:
-		bb = b.(Series)
+		bb = tp
 	default:
 		panic("input should be either *Series or float64")
 
 	}
-	return &AddSeriesResult{aa, bb}
+	return NewSeries(&AddSeriesResult{aa, bb})
 }
 
 func (a *AddSeriesResult) Last() float64 {
@@ -295,10 +389,10 @@ type MinusSeriesResult struct {
 }
 
 // Minus two series, result[i] = a[i] - b[i]
-func Minus(a interface{}, b interface{}) Series {
+func Minus(a interface{}, b interface{}) SeriesExtend {
 	aa := switchIface(a)
 	bb := switchIface(b)
-	return &MinusSeriesResult{aa, bb}
+	return NewSeries(&MinusSeriesResult{aa, bb})
 }
 
 func (a *MinusSeriesResult) Last() float64 {
@@ -321,19 +415,19 @@ func (a *MinusSeriesResult) Length() int {
 var _ Series = &MinusSeriesResult{}
 
 func switchIface(b interface{}) Series {
-	switch b.(type) {
+	switch tp := b.(type) {
 	case float64:
-		return NumberSeries(b.(float64))
+		return NumberSeries(tp)
 	case int32:
-		return NumberSeries(float64(b.(int32)))
+		return NumberSeries(float64(tp))
 	case int64:
-		return NumberSeries(float64(b.(int64)))
+		return NumberSeries(float64(tp))
 	case float32:
-		return NumberSeries(float64(b.(float32)))
+		return NumberSeries(float64(tp))
 	case int:
-		return NumberSeries(float64(b.(int)))
+		return NumberSeries(float64(tp))
 	case Series:
-		return b.(Series)
+		return tp
 	default:
 		fmt.Println(reflect.TypeOf(b))
 		panic("input should be either *Series or float64")
@@ -342,13 +436,13 @@ func switchIface(b interface{}) Series {
 }
 
 // Divid two series, result[i] = a[i] / b[i]
-func Div(a interface{}, b interface{}) Series {
+func Div(a interface{}, b interface{}) SeriesExtend {
 	aa := switchIface(a)
 	if 0 == b {
 		panic("Divid by zero exception")
 	}
 	bb := switchIface(b)
-	return &DivSeriesResult{aa, bb}
+	return NewSeries(&DivSeriesResult{aa, bb})
 
 }
 
@@ -377,28 +471,28 @@ func (a *DivSeriesResult) Length() int {
 var _ Series = &DivSeriesResult{}
 
 // Multiple two series, result[i] = a[i] * b[i]
-func Mul(a interface{}, b interface{}) Series {
+func Mul(a interface{}, b interface{}) SeriesExtend {
 	var aa Series
 	var bb Series
 
-	switch a.(type) {
+	switch tp := a.(type) {
 	case float64:
-		aa = NumberSeries(a.(float64))
+		aa = NumberSeries(tp)
 	case Series:
-		aa = a.(Series)
+		aa = tp
 	default:
 		panic("input should be either Series or float64")
 	}
-	switch b.(type) {
+	switch tp := b.(type) {
 	case float64:
-		bb = NumberSeries(b.(float64))
+		bb = NumberSeries(tp)
 	case Series:
-		bb = b.(Series)
+		bb = tp
 	default:
 		panic("input should be either Series or float64")
 
 	}
-	return &MulSeriesResult{aa, bb}
+	return NewSeries(&MulSeriesResult{aa, bb})
 
 }
 
@@ -436,7 +530,7 @@ func Dot(a interface{}, b interface{}, limit ...int) float64 {
 // Extract elements from the Series to a float64 array, following the order of Index(0..limit)
 // if limit is given, will only take the first limit numbers (a.Index[0..limit])
 // otherwise will operate on all elements
-func ToArray(a Series, limit ...int) (result []float64) {
+func Array(a Series, limit ...int) (result []float64) {
 	l := -1
 	if len(limit) > 0 {
 		l = limit[0]
@@ -444,19 +538,19 @@ func ToArray(a Series, limit ...int) (result []float64) {
 	if l < a.Length() {
 		l = a.Length()
 	}
-	result = make([]float64, l, l)
+	result = make([]float64, l)
 	for i := 0; i < l; i++ {
 		result[i] = a.Index(i)
 	}
 	return
 }
 
-// Similar to ToArray but in reverse order.
+// Similar to Array but in reverse order.
 // Useful when you want to cache series' calculated result as float64 array
 // the then reuse the result in multiple places (so that no recalculation will be triggered)
 //
 // notice that the return type is a Float64Slice, which implements the Series interface
-func ToReverseArray(a Series, limit ...int) (result Float64Slice) {
+func Reverse(a Series, limit ...int) (result Float64Slice) {
 	l := -1
 	if len(limit) > 0 {
 		l = limit[0]
@@ -464,7 +558,7 @@ func ToReverseArray(a Series, limit ...int) (result Float64Slice) {
 	if l < a.Length() {
 		l = a.Length()
 	}
-	result = make([]float64, l, l)
+	result = make([]float64, l)
 	for i := 0; i < l; i++ {
 		result[l-i-1] = a.Index(i)
 	}
@@ -500,13 +594,291 @@ func (c *ChangeResult) Length() int {
 
 // Difference between current value and previous, a - a[offset]
 // offset: if not given, offset is 1.
-func Change(a Series, offset ...int) Series {
+func Change(a Series, offset ...int) SeriesExtend {
 	o := 1
-	if len(offset) == 0 {
+	if len(offset) > 0 {
 		o = offset[0]
 	}
 
-	return &ChangeResult{a, o}
+	return NewSeries(&ChangeResult{a, o})
+}
+
+type PercentageChangeResult struct {
+	a      Series
+	offset int
+}
+
+func (c *PercentageChangeResult) Last() float64 {
+	if c.offset >= c.a.Length() {
+		return 0
+	}
+	return c.a.Last()/c.a.Index(c.offset) - 1
+}
+
+func (c *PercentageChangeResult) Index(i int) float64 {
+	if i+c.offset >= c.a.Length() {
+		return 0
+	}
+	return c.a.Index(i)/c.a.Index(i+c.offset) - 1
+}
+
+func (c *PercentageChangeResult) Length() int {
+	length := c.a.Length()
+	if length >= c.offset {
+		return length - c.offset
+	}
+	return 0
+}
+
+// Percentage change between current and a prior element, a / a[offset] - 1.
+// offset: if not give, offset is 1.
+func PercentageChange(a Series, offset ...int) SeriesExtend {
+	o := 1
+	if len(offset) > 0 {
+		o = offset[0]
+	}
+
+	return NewSeries(&PercentageChangeResult{a, o})
+}
+
+func Stdev(a Series, params ...int) float64 {
+	length := a.Length()
+	if len(params) > 0 {
+		if params[0] < length {
+			length = params[0]
+		}
+	}
+	ddof := 0
+	if len(params) > 1 {
+		ddof = params[1]
+	}
+	avg := Mean(a, length)
+	s := .0
+	for i := 0; i < length; i++ {
+		diff := a.Index(i) - avg
+		s += diff * diff
+	}
+	return math.Sqrt(s / float64(length-ddof))
+}
+
+type CorrFunc func(Series, Series, int) float64
+
+func Kendall(a, b Series, length int) float64 {
+	if a.Length() < length {
+		length = a.Length()
+	}
+	if b.Length() < length {
+		length = b.Length()
+	}
+	aRanks := Rank(a, length)
+	bRanks := Rank(b, length)
+	concordant, discordant := 0, 0
+	for i := 0; i < length; i++ {
+		for j := i + 1; j < length; j++ {
+			value := (aRanks.Index(i) - aRanks.Index(j)) * (bRanks.Index(i) - bRanks.Index(j))
+			if value > 0 {
+				concordant++
+			} else {
+				discordant++
+			}
+		}
+	}
+	return float64(concordant-discordant) * 2.0 / float64(length*(length-1))
+}
+
+func Rank(a Series, length int) SeriesExtend {
+	if length > a.Length() {
+		length = a.Length()
+	}
+	rank := make([]float64, length)
+	mapper := make([]float64, length+1)
+	for i := length - 1; i >= 0; i-- {
+		ii := a.Index(i)
+		counter := 0.
+		for j := 0; j < length; j++ {
+			if a.Index(j) <= ii {
+				counter += 1.
+			}
+		}
+		rank[i] = counter
+		mapper[int(counter)] += 1.
+	}
+	output := NewQueue(length)
+	for i := length - 1; i >= 0; i-- {
+		output.Update(rank[i] - (mapper[int(rank[i])]-1.)/2)
+	}
+	return output
+}
+
+func Pearson(a, b Series, length int) float64 {
+	if a.Length() < length {
+		length = a.Length()
+	}
+	if b.Length() < length {
+		length = b.Length()
+	}
+	x := make([]float64, length)
+	y := make([]float64, length)
+	for i := 0; i < length; i++ {
+		x[i] = a.Index(i)
+		y[i] = b.Index(i)
+	}
+	return stat.Correlation(x, y, nil)
+}
+
+func Spearman(a, b Series, length int) float64 {
+	if a.Length() < length {
+		length = a.Length()
+	}
+	if b.Length() < length {
+		length = b.Length()
+	}
+	aRank := Rank(a, length)
+	bRank := Rank(b, length)
+	return Pearson(aRank, bRank, length)
+}
+
+// similar to pandas.Series.corr() function.
+//
+// method could either be `types.Pearson`, `types.Spearman` or `types.Kendall`
+func Correlation(a Series, b Series, length int, method ...CorrFunc) float64 {
+	var runner CorrFunc
+	if len(method) == 0 {
+		runner = Pearson
+	} else {
+		runner = method[0]
+	}
+	return runner(a, b, length)
+}
+
+// similar to pandas.Series.cov() function with ddof=0
+//
+// Compute covariance with Series
+func Covariance(a Series, b Series, length int) float64 {
+	if a.Length() < length {
+		length = a.Length()
+	}
+	if b.Length() < length {
+		length = b.Length()
+	}
+
+	meana := Mean(a, length)
+	meanb := Mean(b, length)
+	sum := 0.0
+	for i := 0; i < length; i++ {
+		sum += (a.Index(i) - meana) * (b.Index(i) - meanb)
+	}
+	sum /= float64(length)
+	return sum
+}
+
+func Variance(a Series, length int) float64 {
+	return Covariance(a, a, length)
+}
+
+// similar to pandas.Series.skew() function.
+//
+// Return unbiased skew over input series
+func Skew(a Series, length int) float64 {
+	if length > a.Length() {
+		length = a.Length()
+	}
+	mean := Mean(a, length)
+	sum2 := 0.0
+	sum3 := 0.0
+	for i := 0; i < length; i++ {
+		diff := a.Index(i) - mean
+		sum2 += diff * diff
+		sum3 += diff * diff * diff
+	}
+	if length <= 2 || sum2 == 0 {
+		return math.NaN()
+	}
+	l := float64(length)
+	return l * math.Sqrt(l-1) / (l - 2) * sum3 / math.Pow(sum2, 1.5)
+}
+
+type ShiftResult struct {
+	a      Series
+	offset int
+}
+
+func (inc *ShiftResult) Last() float64 {
+	if inc.offset < 0 {
+		return 0
+	}
+	if inc.offset > inc.a.Length() {
+		return 0
+	}
+	return inc.a.Index(inc.offset)
+}
+func (inc *ShiftResult) Index(i int) float64 {
+	if inc.offset+i < 0 {
+		return 0
+	}
+	if inc.offset+i > inc.a.Length() {
+		return 0
+	}
+	return inc.a.Index(inc.offset + i)
+}
+
+func (inc *ShiftResult) Length() int {
+	return inc.a.Length() - inc.offset
+}
+
+func Shift(a Series, offset int) SeriesExtend {
+	return NewSeries(&ShiftResult{a, offset})
+}
+
+type RollingResult struct {
+	a      Series
+	window int
+}
+
+type SliceView struct {
+	a      Series
+	start  int
+	length int
+}
+
+func (s *SliceView) Last() float64 {
+	return s.a.Index(s.start)
+}
+func (s *SliceView) Index(i int) float64 {
+	if i >= s.length {
+		return 0
+	}
+	return s.a.Index(i + s.start)
+}
+
+func (s *SliceView) Length() int {
+	return s.length
+}
+
+var _ Series = &SliceView{}
+
+func (r *RollingResult) Last() SeriesExtend {
+	return NewSeries(&SliceView{r.a, 0, r.window})
+}
+
+func (r *RollingResult) Index(i int) SeriesExtend {
+	if i*r.window > r.a.Length() {
+		return nil
+	}
+	return NewSeries(&SliceView{r.a, i * r.window, r.window})
+}
+
+func (r *RollingResult) Length() int {
+	mod := r.a.Length() % r.window
+	if mod > 0 {
+		return r.a.Length()/r.window + 1
+	} else {
+		return r.a.Length() / r.window
+	}
+}
+
+func Rolling(a Series, window int) *RollingResult {
+	return &RollingResult{a, window}
 }
 
 // TODO: ta.linreg

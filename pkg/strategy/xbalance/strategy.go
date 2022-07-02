@@ -7,14 +7,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/c9s/bbgo/pkg/bbgo"
-	"github.com/c9s/bbgo/pkg/fixedpoint"
-	"github.com/c9s/bbgo/pkg/service"
-	"github.com/c9s/bbgo/pkg/types"
-	"github.com/c9s/bbgo/pkg/util"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"github.com/slack-go/slack"
+
+	"github.com/c9s/bbgo/pkg/bbgo"
+	"github.com/c9s/bbgo/pkg/fixedpoint"
+	"github.com/c9s/bbgo/pkg/types"
+	"github.com/c9s/bbgo/pkg/util"
 )
 
 const ID = "xbalance"
@@ -35,7 +35,7 @@ type State struct {
 }
 
 func (s *State) IsOver24Hours() bool {
-	return time.Now().Sub(time.Unix(s.Since, 0)) >= 24*time.Hour
+	return time.Since(time.Unix(s.Since, 0)) >= 24*time.Hour
 }
 
 func (s *State) PlainText() string {
@@ -83,7 +83,7 @@ func (r *WithdrawalRequest) String() string {
 }
 
 func (r *WithdrawalRequest) PlainText() string {
-	return fmt.Sprintf("Withdrawal request: sending %s %s from %s -> %s",
+	return fmt.Sprintf("Withdraw request: sending %s %s from %s -> %s",
 		r.Amount.FormatString(4),
 		r.Asset,
 		r.FromSession,
@@ -93,7 +93,7 @@ func (r *WithdrawalRequest) PlainText() string {
 
 func (r *WithdrawalRequest) SlackAttachment() slack.Attachment {
 	var color = "#DC143C"
-	title := util.Render(`Withdrawal Request {{ .Asset }}`, r)
+	title := util.Render(`Withdraw Request {{ .Asset }}`, r)
 	return slack.Attachment{
 		// Pretext:       "",
 		// Text:  text,
@@ -135,10 +135,6 @@ func (a *Address) UnmarshalJSON(body []byte) error {
 }
 
 type Strategy struct {
-	Notifiability *bbgo.Notifiability
-	*bbgo.Graceful
-	*bbgo.Persistence
-
 	Interval types.Duration `json:"interval"`
 
 	Addresses map[string]Address `json:"addresses"`
@@ -158,7 +154,7 @@ type Strategy struct {
 
 	Verbose bool `json:"verbose"`
 
-	state *State
+	State *State `persistence:"state"`
 }
 
 func (s *Strategy) ID() string {
@@ -169,45 +165,45 @@ func (s *Strategy) CrossSubscribe(sessions map[string]*bbgo.ExchangeSession) {}
 
 func (s *Strategy) checkBalance(ctx context.Context, sessions map[string]*bbgo.ExchangeSession) {
 	if s.Verbose {
-		s.Notifiability.Notify("📝 Checking %s low balance level exchange session...", s.Asset)
+		bbgo.Notify("📝 Checking %s low balance level exchange session...", s.Asset)
 	}
 
 	var total fixedpoint.Value
 	for _, session := range sessions {
-		if b, ok := session.Account.Balance(s.Asset); ok {
+		if b, ok := session.GetAccount().Balance(s.Asset); ok {
 			total = total.Add(b.Total())
 		}
 	}
 
 	lowLevelSession, lowLevelBalance, err := s.findLowBalanceLevelSession(sessions)
 	if err != nil {
-		s.Notifiability.Notify("Can not find low balance level session: %s", err.Error())
+		bbgo.Notify("Can not find low balance level session: %s", err.Error())
 		log.WithError(err).Errorf("Can not find low balance level session")
 		return
 	}
 
 	if lowLevelSession == nil {
 		if s.Verbose {
-			s.Notifiability.Notify("✅ All %s balances are looking good, total value: %v", s.Asset, total)
+			bbgo.Notify("✅ All %s balances are looking good, total value: %v", s.Asset, total)
 		}
 		return
 	}
 
-	s.Notifiability.Notify("⚠️ Found low level %s balance from session %s: %v", s.Asset, lowLevelSession.Name, lowLevelBalance)
+	bbgo.Notify("⚠️ Found low level %s balance from session %s: %v", s.Asset, lowLevelSession.Name, lowLevelBalance)
 
 	middle := s.Middle
 	if middle.IsZero() {
 		middle = total.Div(fixedpoint.NewFromInt(int64(len(sessions)))).Mul(priceFixer)
-		s.Notifiability.Notify("Total value %v %s, setting middle to %v", total, s.Asset, middle)
+		bbgo.Notify("Total value %v %s, setting middle to %v", total, s.Asset, middle)
 	}
 
 	requiredAmount := middle.Sub(lowLevelBalance.Available)
 
-	s.Notifiability.Notify("Need %v %s to satisfy the middle balance level %v", requiredAmount, s.Asset, middle)
+	bbgo.Notify("Need %v %s to satisfy the middle balance level %v", requiredAmount, s.Asset, middle)
 
 	fromSession, _, err := s.findHighestBalanceLevelSession(sessions, requiredAmount)
 	if err != nil || fromSession == nil {
-		s.Notifiability.Notify("Can not find session with enough balance")
+		bbgo.Notify("Can not find session with enough balance")
 		log.WithError(err).Errorf("can not find session with enough balance")
 		return
 	}
@@ -219,7 +215,7 @@ func (s *Strategy) checkBalance(ctx context.Context, sessions map[string]*bbgo.E
 	}
 
 	if !fromSession.Withdrawal {
-		s.Notifiability.Notify("The withdrawal function exchange session %s is not enabled", fromSession.Name)
+		bbgo.Notify("The withdrawal function exchange session %s is not enabled", fromSession.Name)
 		log.Errorf("The withdrawal function of exchange session %s is not enabled", fromSession.Name)
 		return
 	}
@@ -227,7 +223,7 @@ func (s *Strategy) checkBalance(ctx context.Context, sessions map[string]*bbgo.E
 	toAddress, ok := s.Addresses[lowLevelSession.Name]
 	if !ok {
 		log.Errorf("%s address of session %s not found", s.Asset, lowLevelSession.Name)
-		s.Notifiability.Notify("%s address of session %s not found", s.Asset, lowLevelSession.Name)
+		bbgo.Notify("%s address of session %s not found", s.Asset, lowLevelSession.Name)
 		return
 	}
 
@@ -235,54 +231,54 @@ func (s *Strategy) checkBalance(ctx context.Context, sessions map[string]*bbgo.E
 		requiredAmount = requiredAmount.Add(toAddress.ForeignFee)
 	}
 
-	if s.state != nil {
+	if s.State != nil {
 		if s.MaxDailyNumberOfTransfer > 0 {
-			if s.state.DailyNumberOfTransfers >= s.MaxDailyNumberOfTransfer {
-				s.Notifiability.Notify("⚠️ Exceeded %s max daily number of transfers %d (current %d), skipping transfer...",
+			if s.State.DailyNumberOfTransfers >= s.MaxDailyNumberOfTransfer {
+				bbgo.Notify("⚠️ Exceeded %s max daily number of transfers %d (current %d), skipping transfer...",
 					s.Asset,
 					s.MaxDailyNumberOfTransfer,
-					s.state.DailyNumberOfTransfers)
+					s.State.DailyNumberOfTransfers)
 				return
 			}
 		}
 
 		if s.MaxDailyAmountOfTransfer.Sign() > 0 {
-			if s.state.DailyAmountOfTransfers.Compare(s.MaxDailyAmountOfTransfer) >= 0 {
-				s.Notifiability.Notify("⚠️ Exceeded %s max daily amount of transfers %v (current %v), skipping transfer...",
+			if s.State.DailyAmountOfTransfers.Compare(s.MaxDailyAmountOfTransfer) >= 0 {
+				bbgo.Notify("⚠️ Exceeded %s max daily amount of transfers %v (current %v), skipping transfer...",
 					s.Asset,
 					s.MaxDailyAmountOfTransfer,
-					s.state.DailyAmountOfTransfers)
+					s.State.DailyAmountOfTransfers)
 				return
 			}
 		}
 	}
 
-	s.Notifiability.Notify(&WithdrawalRequest{
+	bbgo.Notify(&WithdrawalRequest{
 		FromSession: fromSession.Name,
 		ToSession:   lowLevelSession.Name,
 		Asset:       s.Asset,
 		Amount:      requiredAmount,
 	})
 
-	if err := withdrawalService.Withdrawal(ctx, s.Asset, requiredAmount, toAddress.Address, &types.WithdrawalOptions{
+	if err := withdrawalService.Withdraw(ctx, s.Asset, requiredAmount, toAddress.Address, &types.WithdrawalOptions{
 		Network:    toAddress.Network,
 		AddressTag: toAddress.AddressTag,
 	}); err != nil {
 		log.WithError(err).Errorf("withdrawal failed")
-		s.Notifiability.Notify("withdrawal request failed, error: %v", err)
+		bbgo.Notify("withdrawal request failed, error: %v", err)
 		return
 	}
 
-	s.Notifiability.Notify("%s withdrawal request sent", s.Asset)
+	bbgo.Notify("%s withdrawal request sent", s.Asset)
 
-	if s.state != nil {
-		if s.state.IsOver24Hours() {
-			s.state.Reset()
+	if s.State != nil {
+		if s.State.IsOver24Hours() {
+			s.State.Reset()
 		}
 
-		s.state.DailyNumberOfTransfers += 1
-		s.state.DailyAmountOfTransfers = s.state.DailyAmountOfTransfers.Add(requiredAmount)
-		s.SaveState()
+		s.State.DailyNumberOfTransfers += 1
+		s.State.DailyAmountOfTransfers = s.State.DailyAmountOfTransfers.Add(requiredAmount)
+		bbgo.Sync(s)
 	}
 }
 
@@ -296,7 +292,7 @@ func (s *Strategy) findHighestBalanceLevelSession(sessions map[string]*bbgo.Exch
 			return nil, balance, fmt.Errorf("session %s does not exist", sessionID)
 		}
 
-		if b, ok := session.Account.Balance(s.Asset); ok {
+		if b, ok := session.GetAccount().Balance(s.Asset); ok {
 			if b.Available.Sub(requiredAmount).Compare(s.Low) > 0 && b.Available.Compare(maxBalanceLevel) > 0 {
 				maxBalanceLevel = b.Available
 				maxBalanceSession = session
@@ -316,7 +312,7 @@ func (s *Strategy) findLowBalanceLevelSession(sessions map[string]*bbgo.Exchange
 			return nil, balance, fmt.Errorf("session %s does not exist", sessionID)
 		}
 
-		balance, ok = session.Account.Balance(s.Asset)
+		balance, ok = session.GetAccount().Balance(s.Asset)
 		if ok {
 			if balance.Available.Compare(s.Low) <= 0 {
 				return session, balance, nil
@@ -327,15 +323,6 @@ func (s *Strategy) findLowBalanceLevelSession(sessions map[string]*bbgo.Exchange
 	return nil, balance, nil
 }
 
-func (s *Strategy) SaveState() {
-	if err := s.Persistence.Save(s.state, ID, s.Asset, stateKey); err != nil {
-		log.WithError(err).Errorf("can not save state: %+v", s.state)
-	} else {
-		log.Infof("%s %s state is saved: %+v", ID, s.Asset, s.state)
-		s.Notifiability.Notify("%s %s state is saved", ID, s.Asset, s.state)
-	}
-}
-
 func (s *Strategy) newDefaultState() *State {
 	return &State{
 		Asset:                  s.Asset,
@@ -344,42 +331,17 @@ func (s *Strategy) newDefaultState() *State {
 	}
 }
 
-func (s *Strategy) LoadState() error {
-	var state State
-	if err := s.Persistence.Load(&state, ID, s.Asset, stateKey); err != nil {
-		if err != service.ErrPersistenceNotExists {
-			return err
-		}
-
-		s.state = s.newDefaultState()
-		s.state.Reset()
-	} else {
-		// we loaded it successfully
-		s.state = &state
-
-		// update Asset name for legacy caches
-		s.state.Asset = s.Asset
-
-		log.Infof("%s %s state is restored: %+v", ID, s.Asset, s.state)
-		s.Notifiability.Notify("%s %s state is restored", ID, s.Asset, s.state)
-	}
-
-	return nil
-}
-
 func (s *Strategy) CrossRun(ctx context.Context, _ bbgo.OrderExecutionRouter, sessions map[string]*bbgo.ExchangeSession) error {
 	if s.Interval == 0 {
 		return errors.New("interval can not be zero")
 	}
 
-	if err := s.LoadState(); err != nil {
-		return err
+	if s.State == nil {
+		s.State = s.newDefaultState()
 	}
 
-	s.Graceful.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
+	bbgo.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
 		defer wg.Done()
-
-		s.SaveState()
 	})
 
 	if s.CheckOnStart {

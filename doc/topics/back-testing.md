@@ -17,8 +17,11 @@ backtest:
   # the symbol data that you want to sync and back-test
   symbols:
   - BTCUSDT
+
+  sessions:
+  - binance
   
-  account:
+  accounts:
     # the initial account balance you want to start with
     binance: # exchange name
       balances:

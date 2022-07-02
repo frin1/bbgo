@@ -11,7 +11,6 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/c9s/bbgo/pkg/bbgo"
-	"github.com/c9s/bbgo/pkg/exchange/max"
 	"github.com/c9s/bbgo/pkg/fixedpoint"
 	"github.com/c9s/bbgo/pkg/service"
 	"github.com/c9s/bbgo/pkg/types"
@@ -43,7 +42,7 @@ type State struct {
 }
 
 func (s *State) IsOver24Hours() bool {
-	return time.Now().Sub(s.AccumulatedFeeStartedAt) >= 24*time.Hour
+	return time.Since(s.AccumulatedFeeStartedAt) >= 24*time.Hour
 }
 
 func (s *State) Reset() {
@@ -58,8 +57,6 @@ func (s *State) Reset() {
 }
 
 type Strategy struct {
-	*bbgo.Graceful
-	*bbgo.Notifiability
 	*bbgo.Persistence
 
 	Symbol          string           `json:"symbol"`
@@ -195,7 +192,7 @@ func (s *Strategy) CrossRun(ctx context.Context, _ bbgo.OrderExecutionRouter, se
 		}
 	}
 
-	s.Graceful.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
+	bbgo.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
 		defer wg.Done()
 
 		close(s.stopC)
@@ -232,7 +229,7 @@ func (s *Strategy) CrossRun(ctx context.Context, _ bbgo.OrderExecutionRouter, se
 	s.tradingSession.UserDataStream.OnTradeUpdate(s.handleTradeUpdate)
 
 	instanceID := fmt.Sprintf("%s-%s", ID, s.Symbol)
-	s.groupID = max.GenerateGroupID(instanceID)
+	s.groupID = util.FNV32(instanceID)
 	log.Infof("using group id %d from fnv32(%s)", s.groupID, instanceID)
 
 	go func() {
@@ -316,7 +313,7 @@ func (s *Strategy) CrossRun(ctx context.Context, _ bbgo.OrderExecutionRouter, se
 
 				log.Infof("mid price %v", midPrice)
 
-				var balances = s.tradingSession.Account.Balances()
+				var balances = s.tradingSession.GetAccount().Balances()
 				var quantity = s.tradingMarket.MinQuantity
 
 				if s.Quantity.Sign() > 0 {

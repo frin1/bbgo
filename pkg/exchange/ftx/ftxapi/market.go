@@ -25,7 +25,7 @@ type Market struct {
 	Underlying            string           `json:"underlying"`
 	Enabled               bool             `json:"enabled"`
 	Ask                   fixedpoint.Value `json:"ask"`
-	Bid                   fixedpoint.Value              `json:"bid"`
+	Bid                   fixedpoint.Value `json:"bid"`
 	Last                  fixedpoint.Value `json:"last"`
 	PostOnly              bool             `json:"postOnly"`
 	Price                 fixedpoint.Value `json:"price"`
@@ -33,9 +33,10 @@ type Market struct {
 	SizeIncrement         fixedpoint.Value `json:"sizeIncrement"`
 	Restricted            bool             `json:"restricted"`
 }
+
 //go:generate GetRequest -url "api/markets" -type GetMarketsRequest -responseDataType []Market
 type GetMarketsRequest struct {
-	client requestgen.AuthenticatedAPIClient
+	client requestgen.APIClient
 }
 
 func (c *RestClient) NewGetMarketsRequest() *GetMarketsRequest {

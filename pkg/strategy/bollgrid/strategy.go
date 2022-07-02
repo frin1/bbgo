@@ -25,10 +25,6 @@ func init() {
 }
 
 type Strategy struct {
-	// The notification system will be injected into the strategy automatically.
-	// This field will be injected automatically since it's a single exchange strategy.
-	*bbgo.Notifiability
-
 	// OrderExecutor is an interface for submitting order.
 	// This field will be injected automatically since it's a single exchange strategy.
 	bbgo.OrderExecutor
@@ -44,9 +40,6 @@ type Strategy struct {
 	// StandardIndicatorSet contains the standard indicators of a market (symbol)
 	// This field will be injected automatically since we defined the Symbol field.
 	*bbgo.StandardIndicatorSet
-
-	// Graceful let you define the graceful shutdown handler
-	*bbgo.Graceful
 
 	// Market stores the configuration of the market, for example, VolumePrecision, PricePrecision, MinLotSize... etc
 	// This field will be injected automatically since we defined the Symbol field.
@@ -74,9 +67,9 @@ type Strategy struct {
 	Quantity fixedpoint.Value `json:"quantity"`
 
 	// activeOrders is the locally maintained active order book of the maker orders.
-	activeOrders *bbgo.LocalActiveOrderBook
+	activeOrders *bbgo.ActiveOrderBook
 
-	profitOrders *bbgo.LocalActiveOrderBook
+	profitOrders *bbgo.ActiveOrderBook
 
 	orders *bbgo.OrderStore
 
@@ -108,15 +101,15 @@ func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
 	}
 
 	// currently we need the 1m kline to update the last close price and indicators
-	session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.Interval.String()})
+	session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.Interval})
 
 	if len(s.RepostInterval) > 0 && s.Interval != s.RepostInterval {
-		session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.RepostInterval.String()})
+		session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.RepostInterval})
 	}
 }
 
 func (s *Strategy) generateGridBuyOrders(session *bbgo.ExchangeSession) ([]types.SubmitOrder, error) {
-	balances := session.Account.Balances()
+	balances := session.GetAccount().Balances()
 	quoteBalance := balances[s.Market.QuoteCurrency].Available
 	if quoteBalance.Sign() <= 0 {
 		return nil, fmt.Errorf("quote balance %s is zero: %v", s.Market.QuoteCurrency, quoteBalance)
@@ -181,7 +174,7 @@ func (s *Strategy) generateGridBuyOrders(session *bbgo.ExchangeSession) ([]types
 }
 
 func (s *Strategy) generateGridSellOrders(session *bbgo.ExchangeSession) ([]types.SubmitOrder, error) {
-	balances := session.Account.Balances()
+	balances := session.GetAccount().Balances()
 	baseBalance := balances[s.Market.BaseCurrency].Available
 	if baseBalance.Sign() <= 0 {
 		return nil, fmt.Errorf("base balance %s is zero: %+v", s.Market.BaseCurrency, baseBalance)
@@ -288,7 +281,7 @@ func (s *Strategy) updateOrders(orderExecutor bbgo.OrderExecutor, session *bbgo.
 }
 
 func (s *Strategy) submitReverseOrder(order types.Order, session *bbgo.ExchangeSession) {
-	balances := session.Account.Balances()
+	balances := session.GetAccount().Balances()
 
 	var side = order.Side.Reverse()
 	var price = order.Price
@@ -341,20 +334,20 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 	s.orders.BindStream(session.UserDataStream)
 
 	// we don't persist orders so that we can not clear the previous orders for now. just need time to support this.
-	s.activeOrders = bbgo.NewLocalActiveOrderBook(s.Symbol)
+	s.activeOrders = bbgo.NewActiveOrderBook(s.Symbol)
 	s.activeOrders.OnFilled(func(o types.Order) {
 		s.submitReverseOrder(o, session)
 	})
 	s.activeOrders.BindStream(session.UserDataStream)
 
-	s.profitOrders = bbgo.NewLocalActiveOrderBook(s.Symbol)
+	s.profitOrders = bbgo.NewActiveOrderBook(s.Symbol)
 	s.profitOrders.OnFilled(func(o types.Order) {
 		// we made profit here!
 	})
 	s.profitOrders.BindStream(session.UserDataStream)
 
 	// setup graceful shutting down handler
-	s.Graceful.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
+	bbgo.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
 		// call Done to notify the main process.
 		defer wg.Done()
 		log.Infof("canceling active orders...")

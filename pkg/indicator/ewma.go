@@ -16,6 +16,7 @@ const MaxNumOfEWMATruncateSize = 100
 //go:generate callbackgen -type EWMA
 type EWMA struct {
 	types.IntervalWindow
+	types.SeriesBase
 	Values       types.Float64Slice
 	LastOpenTime time.Time
 
@@ -26,6 +27,7 @@ func (inc *EWMA) Update(value float64) {
 	var multiplier = 2.0 / float64(1+inc.Window)
 
 	if len(inc.Values) == 0 {
+		inc.SeriesBase.Series = inc
 		inc.Values.Push(value)
 		return
 	} else if len(inc.Values) > MaxNumOfEWMA {
@@ -124,32 +126,6 @@ func ewma(prices []float64, multiplier float64) float64 {
 	return prices[end]*multiplier + (1-multiplier)*ewma(prices[:end], multiplier)
 }
 
-type KLinePriceMapper func(k types.KLine) float64
-
-func KLineOpenPriceMapper(k types.KLine) float64 {
-	return k.Open.Float64()
-}
-
-func KLineClosePriceMapper(k types.KLine) float64 {
-	return k.Close.Float64()
-}
-
-func KLineTypicalPriceMapper(k types.KLine) float64 {
-	return (k.High.Float64() + k.Low.Float64() + k.Close.Float64()) / 3.
-}
-
-func MapKLinePrice(kLines []types.KLine, f KLinePriceMapper) (prices []float64) {
-	for _, k := range kLines {
-		prices = append(prices, f(k))
-	}
-
-	return prices
-}
-
-type KLineWindowUpdater interface {
-	OnKLineWindowUpdate(func(interval types.Interval, window types.KLineWindow))
-}
-
 func (inc *EWMA) handleKLineWindowUpdate(interval types.Interval, window types.KLineWindow) {
 	if inc.Interval != interval {
 		return
@@ -162,4 +138,4 @@ func (inc *EWMA) Bind(updater KLineWindowUpdater) {
 	updater.OnKLineWindowUpdate(inc.handleKLineWindowUpdate)
 }
 
-var _ types.Series = &EWMA{}
+var _ types.SeriesExtend = &EWMA{}

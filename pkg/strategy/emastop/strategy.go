@@ -25,11 +25,6 @@ func init() {
 }
 
 type Strategy struct {
-	*bbgo.Graceful
-
-	// The notification system will be injected into the strategy automatically.
-	// This field will be injected automatically since it's a single exchange strategy.
-	*bbgo.Notifiability
 
 	SourceExchangeName string `json:"sourceExchange"`
 
@@ -73,8 +68,8 @@ func (s *Strategy) ID() string {
 }
 
 func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
-	session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.Interval.String()})
-	session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.MovingAverageInterval.String()})
+	session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.Interval})
+	session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.MovingAverageInterval})
 }
 
 func (s *Strategy) CrossSubscribe(sessions map[string]*bbgo.ExchangeSession) {
@@ -83,7 +78,7 @@ func (s *Strategy) CrossSubscribe(sessions map[string]*bbgo.ExchangeSession) {
 
 	// make sure we have the connection alive
 	targetSession := sessions[s.TargetExchangeName]
-	targetSession.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.Interval.String()})
+	targetSession.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.Interval})
 }
 
 func (s *Strategy) clear(ctx context.Context, orderExecutor bbgo.OrderExecutor) {
@@ -138,7 +133,7 @@ func (s *Strategy) place(ctx context.Context, orderExecutor bbgo.OrderExecutor, 
 	quantity := s.Quantity
 	if s.BalancePercentage.Sign() > 0 {
 
-		if balance, ok := session.Account.Balance(market.BaseCurrency); ok {
+		if balance, ok := session.GetAccount().Balance(market.BaseCurrency); ok {
 			quantity = balance.Available.Mul(s.BalancePercentage)
 		}
 	}
@@ -221,7 +216,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 		s.place(ctx, orderExecutor, session, indicator, closePrice)
 	})
 
-	s.Graceful.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
+	bbgo.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
 		defer wg.Done()
 		log.Infof("canceling trailingstop order...")
 		s.clear(ctx, orderExecutor)
@@ -265,7 +260,7 @@ func (s *Strategy) CrossRun(ctx context.Context, _ bbgo.OrderExecutionRouter, se
 		s.place(ctx, &orderExecutor, session, indicator, closePrice)
 	})
 
-	s.Graceful.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
+	bbgo.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
 		defer wg.Done()
 		log.Infof("canceling trailingstop order...")
 		s.clear(ctx, &orderExecutor)

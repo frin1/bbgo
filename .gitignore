@@ -36,9 +36,16 @@
 
 bbgo.sqlite3
 node_modules
+output
 
 otp*png
 
 /.deploy
 
+testoutput
+
 *.swp
+/pkg/backtest/assets.go
+
+coverage.txt
+coverage_dum.txt

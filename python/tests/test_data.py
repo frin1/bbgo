@@ -1,9 +1,10 @@
-from datetime import datetime
+from decimal import Decimal
 
 import bbgo_pb2
 from bbgo.data import Balance
 from bbgo.data import ErrorMessage
 from bbgo.data import KLine
+from bbgo.utils import parse_time
 
 
 def test_balance_from_pb():
@@ -11,7 +12,7 @@ def test_balance_from_pb():
     currency = 'BTCUSDT'
     available = '3.1415926'
     locked = '2.7182818'
-    borrowed = 'borrowed'
+    borrowed = '0.1234567'
 
     balance_pb = bbgo_pb2.Balance(
         exchange=exchange,
@@ -25,9 +26,9 @@ def test_balance_from_pb():
 
     assert balance.exchange == exchange
     assert balance.currency == currency
-    assert balance.available == float(available)
-    assert balance.locked == float(locked)
-    assert balance.borrowed == borrowed
+    assert balance.available == Decimal(available)
+    assert balance.locked == Decimal(locked)
+    assert balance.borrowed == Decimal(borrowed)
 
 
 def test_kline_from_pb():
@@ -59,14 +60,14 @@ def test_kline_from_pb():
 
     assert kline.exchange == exchange
     assert kline.symbol == symbol
-    assert kline.open == float(open)
-    assert kline.high == float(high)
-    assert kline.low == float(low)
-    assert kline.close == float(close)
-    assert kline.volume == float(volume)
-    assert kline.quote_volume == float(quote_volume)
-    assert kline.start_time == datetime.fromtimestamp(start_time / 1000)
-    assert kline.end_time == datetime.fromtimestamp(end_time / 1000)
+    assert kline.open == Decimal(open)
+    assert kline.high == Decimal(high)
+    assert kline.low == Decimal(low)
+    assert kline.close == Decimal(close)
+    assert kline.volume == Decimal(volume)
+    assert kline.quote_volume == Decimal(quote_volume)
+    assert kline.start_time == parse_time(start_time)
+    assert kline.end_time == parse_time(end_time)
     assert closed == closed
 
 

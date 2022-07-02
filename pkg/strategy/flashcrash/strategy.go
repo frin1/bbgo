@@ -37,7 +37,7 @@ type Strategy struct {
 	BaseQuantity fixedpoint.Value `json:"baseQuantity"`
 
 	// activeOrders is the locally maintained active order book of the maker orders.
-	activeOrders *bbgo.LocalActiveOrderBook
+	activeOrders *bbgo.ActiveOrderBook
 
 	// Injection fields start
 	// --------------------------
@@ -49,10 +49,6 @@ type Strategy struct {
 	// This field will be injected automatically since we defined the Symbol field.
 	*bbgo.StandardIndicatorSet
 
-	// Graceful shutdown function
-	*bbgo.Graceful
-	// --------------------------
-
 	// ewma is the exponential weighted moving average indicator
 	ewma *indicator.EWMA
 }
@@ -62,7 +58,7 @@ func (s *Strategy) ID() string {
 }
 
 func (s *Strategy) updateOrders(orderExecutor bbgo.OrderExecutor, session *bbgo.ExchangeSession) {
-	if err := orderExecutor.CancelOrders(context.Background(), s.activeOrders.Bids.Orders()...); err != nil {
+	if err := s.activeOrders.GracefulCancel(context.Background(), session.Exchange); err != nil {
 		log.WithError(err).Errorf("cancel order error")
 	}
 
@@ -71,7 +67,7 @@ func (s *Strategy) updateOrders(orderExecutor bbgo.OrderExecutor, session *bbgo.
 
 func (s *Strategy) updateBidOrders(orderExecutor bbgo.OrderExecutor, session *bbgo.ExchangeSession) {
 	quoteCurrency := s.Market.QuoteCurrency
-	balances := session.Account.Balances()
+	balances := session.GetAccount().Balances()
 
 	balance, ok := balances[quoteCurrency]
 	if !ok || balance.Available.Sign() <= 0 {
@@ -106,15 +102,15 @@ func (s *Strategy) updateBidOrders(orderExecutor bbgo.OrderExecutor, session *bb
 }
 
 func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
-	session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: string(s.Interval)})
+	session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.Interval})
 }
 
 func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, session *bbgo.ExchangeSession) error {
 	// we don't persist orders so that we can not clear the previous orders for now. just need time to support this.
-	s.activeOrders = bbgo.NewLocalActiveOrderBook(s.Symbol)
+	s.activeOrders = bbgo.NewActiveOrderBook(s.Symbol)
 	s.activeOrders.BindStream(session.UserDataStream)
 
-	s.Graceful.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
+	bbgo.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
 		defer wg.Done()
 
 		log.Infof("canceling active orders...")

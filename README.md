@@ -1,11 +1,14 @@
 # BBGO
 
-A trading bot framework written in Go. The name bbgo comes from the BB8 bot in the Star Wars movie. aka Buy BitCoin Go!
+A trading bot framework written in Go. The name bbgo comes from the BB8 bot in the Star Wars movie.
 
 ## Current Status
 
 [![Go](https://github.com/c9s/bbgo/actions/workflows/go.yml/badge.svg?branch=main)](https://github.com/c9s/bbgo/actions/workflows/go.yml)
+[![GoDoc](https://godoc.org/github.com/c9s/bbgo?status.svg)](https://pkg.go.dev/github.com/c9s/bbgo)
+[![Go Report Card](https://goreportcard.com/badge/github.com/c9s/bbgo)](https://goreportcard.com/report/github.com/c9s/bbgo)
 [![DockerHub](https://img.shields.io/docker/pulls/yoanlin/bbgo.svg)](https://hub.docker.com/r/yoanlin/bbgo)
+[![Coverage Status](http://codecov.io/github/c9s/bbgo/coverage.svg?branch=main)](http://codecov.io/github/c9s/bbgo?branch=main)
 <img alt="open collective badge" src="https://opencollective.com/bbgo/tiers/badge.svg">
 <img alt="open collective badge" src="https://opencollective.com/bbgo/tiers/backer/badge.svg?label=backer&color=brightgreen" />
 
@@ -15,8 +18,19 @@ A trading bot framework written in Go. The name bbgo comes from the BB8 bot in t
 [![Telegram Taiwan](https://img.shields.io/badge/telegram-tw-blue.svg)](https://t.me/bbgocrypto)
 [![Twitter](https://img.shields.io/twitter/follow/bbgotrading?label=Follow&style=social)](https://twitter.com/bbgotrading)
 
-## Documentation and General Topics
-- Check the [documentation index](doc/README.md)
+## What You Can Do With BBGO
+
+### Trading Bot Users 💁‍♀️ 💁‍♂️
+
+You can use BBGO to run the built-in strategies.
+
+### Strategy Developers 🥷
+
+You can use BBGO's trading unit and back-test unit to implement your own strategies.
+
+### Trading Unit Developers 🧑‍💻
+
+You can use BBGO's underlying common exchange API, currently it supports 4+ major exchanges, so you don't have to repeat the implementation.
 
 ## Features
 
@@ -27,10 +41,41 @@ A trading bot framework written in Go. The name bbgo comes from the BB8 bot in t
 - PnL calculation.
 - Slack/Telegram notification.
 - Back-testing: KLine-based back-testing engine. See [Back-testing](./doc/topics/back-testing.md)
-- Built-in Grid strategy.
-- Many built-in strategies.
+- Built-in parameter optimization tool.
+- Built-in Grid strategy and many other built-in strategies.
 - Multi-exchange session support: you can connect to more than 2 exchanges with different accounts or subaccounts.
-- Standard indicators, e.g., SMA, EMA, BOLL, VMA, MACD...
+- Indicators with interface similar to `pandas.Series`([series](https://github.com/c9s/bbgo/blob/main/doc/development/series.md))([usage](https://github.com/c9s/bbgo/blob/main/doc/development/indicator.md)):
+  - [Accumulation/Distribution Indicator](./pkg/indicator/ad.go)
+  - [Arnaud Legoux Moving Average](./pkg/indicator/alma.go)
+  - [Average True Range](./pkg/indicator/atr.go)
+  - [Bollinger Bands](./pkg/indicator/boll.go)
+  - [Commodity Channel Index](./pkg/indicator/cci.go)
+  - [Cumulative Moving Average](./pkg/indicator/cma.go)
+  - [Double Exponential Moving Average](./pkg/indicator/dema.go)
+  - [Directional Movement Index](./pkg/indicator/dmi.go)
+  - [Brownian Motion's Drift Factor](./pkg/indicator/drift.go)
+  - [Ease of Movement](./pkg/indicator/emv.go)
+  - [Exponentially Weighted Moving Average](./pkg/indicator/ewma.go)
+  - [Hull Moving Average](./pkg/indicator/hull.go)
+  - [Trend Line (Tool)](./pkg/indicator/line.go)
+  - [Moving Average Convergence Divergence Indicator](./pkg/indicator/macd.go)
+  - [On-Balance Volume](./pkg/indicator/obv.go)
+  - [Pivot](./pkg/indicator/pivot.go)
+  - [Running Moving Average](./pkg/indicator/rma.go)
+  - [Relative Strength Index](./pkg/indicator/rsi.go)
+  - [Simple Moving Average](./pkg/indicator/sma.go)
+  - [Ehler's Super Smoother Filter](./pkg/indicator/ssf.go)
+  - [Stochastic Oscillator](./pkg/indicator/stoch.go)
+  - [SuperTrend](./pkg/indicator/supertrend.go)
+  - [Triple Exponential Moving Average](./pkg/indicator/tema.go)
+  - [Tillson T3 Moving Average](./pkg/indicator/till.go)
+  - [Triangular Moving Average](./pkg/indicator/tma.go)
+  - [Variable Index Dynamic Average](./pkg/indicator/vidya.go)
+  - [Volatility Indicator](./pkg/indicator/volatility.go)
+  - [Volume Weighted Average Price](./pkg/indicator/vwap.go)
+  - [Zero Lag Exponential Moving Average](./pkg/indicator/zlema.go)
+  - And more...
+- HeikinAshi OHLC / Normal OHLC (check [this config](https://github.com/c9s/bbgo/blob/main/config/skeleton.yaml#L5))
 - React-powered Web Dashboard.
 - Docker image ready.
 - Kubernetes support.
@@ -39,7 +84,9 @@ A trading bot framework written in Go. The name bbgo comes from the BB8 bot in t
 
 ## Screenshots
 
-![bbgo dashboard](assets/screenshots/dashboard.jpeg) 
+![bbgo dashboard](assets/screenshots/dashboard.jpeg)
+
+![bbgo backtest report](assets/screenshots/backtest-report.jpg)
 
 ## Supported Exchanges
 
@@ -49,7 +96,12 @@ A trading bot framework written in Go. The name bbgo comes from the BB8 bot in t
 - Kucoin Spot Exchange
 - MAX Spot Exchange (located in Taiwan)
 
+## Documentation and General Topics
+
+- Check the [documentation index](doc/README.md)
+
 ## BBGO Tokenomics
+
 To support the development of BBGO, we have created a bounty pool to support contributors by giving away $BBG tokens.
 Check the details in [$BBG Contract Page](contracts/README.md) and our [official website](https://bbgo.finance)
 
@@ -58,7 +110,7 @@ Check the details in [$BBG Contract Page](contracts/README.md) and our [official
 Get your exchange API key and secret after you register the accounts (you can choose one or more exchanges):
 
 - MAX: <https://max.maicoin.com/signup?r=c7982718>
-- Binance: <https://www.binancezh.com/en/register?ref=VGDGLT80>
+- Binance: <https://accounts.binance.com/en/register?ref=38192708>
 - FTX: <https://ftx.com/#a=7710474>
 - OKEx: <https://www.okex.com/join/2412712?src=from:ios-share>
 - Kucoin: <https://www.kucoin.com/ucenter/signup?rcode=r3KX2D4>
@@ -86,6 +138,7 @@ bash <(curl -s https://raw.githubusercontent.com/c9s/bbgo/main/scripts/setup-bol
 ```
 
 If you already have configuration somewhere, a download-only script might be suitable for you:
+
 ```sh
 bash <(curl -s https://raw.githubusercontent.com/c9s/bbgo/main/scripts/download.sh)
 ```
@@ -95,7 +148,7 @@ Or refer to the [Release Page](https://github.com/c9s/bbgo/releases) and downloa
 Since v2, we've added new float point implementation from dnum to support decimals with higher precision.
 To download & setup, please refer to [Dnum Installation](doc/topics/dnum-binary.md)
 
-### One-click Linode StackScript:
+### One-click Linode StackScript
 
 - BBGO Grid Trading on Binance <https://cloud.linode.com/stackscripts/950715>
 - BBGO USDT/TWD Grid Trading on MAX <https://cloud.linode.com/stackscripts/793380>
@@ -146,13 +199,11 @@ Prepare your dotenv file `.env.local` and BBGO yaml config file `bbgo.yaml`.
 
 To check the available environment variables, please see [Environment Variables](./doc/configuration/envvars.md)
 
-
 The minimal bbgo.yaml could be generated by:
 
 ```sh
 curl -o bbgo.yaml https://raw.githubusercontent.com/c9s/bbgo/main/config/minimal.yaml
 ```
-
 
 To run strategy:
 
@@ -166,13 +217,11 @@ To start bbgo with the frontend dashboard:
 bbgo run --enable-webserver
 ```
 
-
 If you want to switch to other dotenv file, you can add an `--dotenv` option or `--config`:
 
 ```sh
 bbgo sync --dotenv .env.dev --config config/grid.yaml --session binance
 ```
-
 
 To query transfer history:
 
@@ -180,12 +229,13 @@ To query transfer history:
 bbgo transfer-history --session max --asset USDT --since "2019-01-01"
 ```
 
+<!--
 To calculate pnl:
 
 ```sh
 bbgo pnl --exchange binance --asset BTC --since "2019-01-01"
 ```
-
+--->
 
 ## Advanced Configuration
 
@@ -193,6 +243,7 @@ bbgo pnl --exchange binance --asset BTC --since "2019-01-01"
 
 Currently only supports binance testnet.
 To run bbgo in testnet, apply new API keys from [Binance Test Network](https://testnet.binance.vision), and set the following env before you start bbgo:
+
 ```bash
 export PAPER_TRADE=1
 export DISABLE_MARKET_CACHE=1 # the symbols supported in testnet is far less than the mainnet
@@ -211,6 +262,10 @@ loss correctly.
 By synchronizing trades and orders to the local database, you can earn some benefits like PnL calculations, backtesting
 and asset calculation.
 
+You can only use one database driver MySQL or SQLite to store your trading data.
+
+**Notice**: SQLite is not fully supported, we recommend you use MySQL instead of SQLite.
+
 #### Configure MySQL Database
 
 To use MySQL database for data syncing, first you need to install your mysql server:
@@ -218,6 +273,9 @@ To use MySQL database for data syncing, first you need to install your mysql ser
 ```sh
 # For Ubuntu Linux
 sudo apt-get install -y mysql-server
+
+# For newer Ubuntu Linux
+sudo apt install -y mysql-server
 ```
 
 Or [run it in docker](https://hub.docker.com/_/mysql)
@@ -237,7 +295,7 @@ DB_DSN="user:password@tcp(127.0.0.1:3306)/bbgo"
 
 #### Configure Sqlite3 Database
 
-Just put these environment variables in your `.env.local` file:
+To use SQLite3 instead of MySQL, simply put these environment variables in your `.env.local` file:
 
 ```sh
 DB_DRIVER=sqlite3
@@ -257,6 +315,9 @@ To use Redis, first you need to install your Redis server:
 ```sh
 # For Ubuntu/Debian Linux
 sudo apt-get install -y redis
+
+# For newer Ubuntu/Debian Linux
+sudo apt install -y redis
 ```
 
 Set the following environment variables in your `bbgo.yaml`:
@@ -283,7 +344,9 @@ Check out the strategy directory [strategy](pkg/strategy) for all built-in strat
   indicator [bollgrid](pkg/strategy/bollgrid)
 - `grid` strategy implements the fixed price band grid strategy [grid](pkg/strategy/grid). See
   [document](./doc/strategy/grid.md).
-- `support` strategy implements the fixed price band grid strategy [support](pkg/strategy/support). See
+- `supertrend` strategy uses Supertrend indicator as trend, and DEMA indicator as noise filter [supertrend](pkg/strategy/supertrend). See
+  [document](./doc/strategy/supertrend.md).
+- `support` strategy uses K-lines with high volume as support [support](pkg/strategy/support). See
   [document](./doc/strategy/support.md).
 - `flashcrash` strategy implements a strategy that catches the flashcrash [flashcrash](pkg/strategy/flashcrash)
 
@@ -375,7 +438,7 @@ import (
 )
 ```
 
-## Write your own strategy
+## Write your own private strategy
 
 Create your go package, and initialize the repository with `go mod` and add bbgo as a dependency:
 
@@ -427,6 +490,13 @@ Or you can build your own wrapper binary via:
 ```shell
 bbgo build --config config/bbgo.yaml
 ```
+
+See also:
+
+- <https://github.com/narumiruna/bbgo-template>
+- <https://github.com/narumiruna/bbgo-marketcap>
+- <https://github.com/austin362667/shadow>
+- <https://github.com/jnlin/bbgo-strategy-infinite-grid>
 
 ## Command Usages
 
@@ -542,13 +612,6 @@ streambook.BindStream(stream)
 6. Push your changes to your fork.
 7. Send a pull request.
 
-### Setup frontend development environment
-
-```sh
-cd frontend
-yarn install
-```
-
 ### Testing Desktop App
 
 for webview
@@ -570,6 +633,11 @@ What's Position?
 - Base Currency & Quote Currency <https://www.ig.com/au/glossary-trading-terms/base-currency-definition>
 - How to calculate average cost? <https://www.janushenderson.com/en-us/investor/planning/calculate-average-cost/>
 
+## Looking For A New Strategy?
+
+You can write an article about BBGO in any topic, in 750-1500 words for exchange, and I can implement the strategy for you (depends on the complexity and efforts).
+If you're interested in, DM me in telegram <https://t.me/c123456789s> or twitter <https://twitter.com/c9s>, we can discuss.
+
 ## Contributing
 
 See [Contributing](./CONTRIBUTING.md)
@@ -584,4 +652,4 @@ See [Contributing](./CONTRIBUTING.md)
 
 ## License
 
-MIT License
+AGPL License

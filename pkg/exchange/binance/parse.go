@@ -51,7 +51,7 @@ executionReport
   "O": 1499405658657,            // Order creation time
   "Z": "0.00000000",             // Cumulative quote asset transacted quantity
   "Y": "0.00000000",             // Last quote asset transacted quantity (i.e. lastPrice * lastQty)
-  "Q": "0.00000000"              // Quote Order Qty
+  "Q": "0.00000000"              // Quote Order Quantity
 }
 */
 type ExecutionReportEvent struct {
@@ -113,13 +113,17 @@ func (e *ExecutionReportEvent) Order() (*types.Order, error) {
 	orderCreationTime := time.Unix(0, e.OrderCreationTime*int64(time.Millisecond))
 	return &types.Order{
 		SubmitOrder: types.SubmitOrder{
-			Symbol:        e.Symbol,
 			ClientOrderID: e.ClientOrderID,
+			Symbol:        e.Symbol,
 			Side:          toGlobalSideType(binance.SideType(e.Side)),
 			Type:          toGlobalOrderType(binance.OrderType(e.OrderType)),
 			Quantity:      e.OrderQuantity,
 			Price:         e.OrderPrice,
+			StopPrice:     e.StopPrice,
 			TimeInForce:   types.TimeInForce(e.TimeInForce),
+			IsFutures:     false,
+			ReduceOnly:    false,
+			ClosePosition: false,
 		},
 		Exchange:         types.ExchangeBinance,
 		IsWorking:        e.IsOnBook,
@@ -272,7 +276,7 @@ func parseWebSocketEvent(message []byte) (interface{}, error) {
 	// fmt.Println(str)
 	eventType := string(val.GetStringBytes("e"))
 	if eventType == "" && IsBookTicker(val) {
-		eventType = "bookticker"
+		eventType = "bookTicker"
 	}
 
 	switch eventType {
@@ -280,7 +284,7 @@ func parseWebSocketEvent(message []byte) (interface{}, error) {
 		var event KLineEvent
 		err := json.Unmarshal([]byte(message), &event)
 		return &event, err
-	case "bookticker":
+	case "bookTicker":
 		var event BookTickerEvent
 		err := json.Unmarshal([]byte(message), &event)
 		event.Event = eventType
@@ -806,7 +810,7 @@ func (e *OrderTradeUpdateEvent) TradeFutures() (*types.Trade, error) {
 		Side:          toGlobalSideType(binance.SideType(e.OrderTrade.Side)),
 		Price:         e.OrderTrade.LastFilledPrice,
 		Quantity:      e.OrderTrade.OrderLastFilledQuantity,
-		QuoteQuantity: e.OrderTrade.OrderFilledAccumulatedQuantity,
+		QuoteQuantity: e.OrderTrade.LastFilledPrice.Mul(e.OrderTrade.OrderLastFilledQuantity),
 		IsBuyer:       e.OrderTrade.Side == "BUY",
 		IsMaker:       e.OrderTrade.IsMaker,
 		Time:          types.Time(tt),

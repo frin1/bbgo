@@ -17,9 +17,9 @@ import (
 	"github.com/c9s/bbgo/pkg/types"
 )
 
-var marketDataLimiter = rate.NewLimiter(rate.Every(1*time.Second), 1)
-var queryTradeLimiter = rate.NewLimiter(rate.Every(5*time.Second), 1)
-var queryOrderLimiter = rate.NewLimiter(rate.Every(5*time.Second), 1)
+var marketDataLimiter = rate.NewLimiter(rate.Every(6*time.Second), 1)
+var queryTradeLimiter = rate.NewLimiter(rate.Every(6*time.Second), 1)
+var queryOrderLimiter = rate.NewLimiter(rate.Every(6*time.Second), 1)
 
 var ErrMissingSequence = errors.New("sequence is missing")
 
@@ -44,7 +44,8 @@ func New(key, secret, passphrase string) *Exchange {
 	}
 
 	return &Exchange{
-		key:        key,
+		key: key,
+		// pragma: allowlist nextline secret
 		secret:     secret,
 		passphrase: passphrase,
 		client:     client,
@@ -160,7 +161,9 @@ func (e *Exchange) IsSupportedInterval(interval types.Interval) bool {
 }
 
 func (e *Exchange) QueryKLines(ctx context.Context, symbol string, interval types.Interval, options types.KLineQueryOptions) ([]types.KLine, error) {
-	_ = marketDataLimiter.Wait(ctx)
+	if err := marketDataLimiter.Wait(ctx); err != nil {
+		return nil, err
+	}
 
 	req := e.client.MarketDataService.NewGetKLinesRequest()
 	req.Symbol(toLocalSymbol(symbol))
@@ -348,7 +351,7 @@ func (e *Exchange) QueryClosedOrders(ctx context.Context, symbol string, since, 
 	return orders, err
 }
 
-var launchDate = time.Date(2017, 9, 0, 0, 0, 0, 0, time.Local)
+var launchDate = time.Date(2017, 9, 0, 0, 0, 0, 0, time.UTC)
 
 func (e *Exchange) QueryTrades(ctx context.Context, symbol string, options *types.TradeQueryOptions) (trades []types.Trade, err error) {
 	req := e.client.TradeService.NewGetFillsRequest()

@@ -7,8 +7,9 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
 
-	"github.com/c9s/bbgo/pkg/service"
+	"github.com/c9s/bbgo/pkg/net/websocketbase"
 	"github.com/c9s/bbgo/pkg/types"
 )
 
@@ -17,7 +18,7 @@ const endpoint = "wss://ftx.com/ws/"
 type Stream struct {
 	*types.StandardStream
 
-	ws       *service.WebsocketClientBase
+	ws       *websocketbase.WebsocketClientBase
 	exchange *Exchange
 
 	key        string
@@ -36,12 +37,13 @@ type klineSubscription struct {
 
 func NewStream(key, secret string, subAccount string, e *Exchange) *Stream {
 	s := &Stream{
-		exchange:       e,
-		key:            key,
+		exchange: e,
+		key:      key,
+		// pragma: allowlist nextline secret
 		secret:         secret,
 		subAccount:     subAccount,
 		StandardStream: &types.StandardStream{},
-		ws:             service.NewWebsocketClientBase(endpoint, 3*time.Second),
+		ws:             websocketbase.NewWebsocketClientBase(endpoint, 3*time.Second),
 	}
 
 	s.ws.OnMessage((&messageHandler{StandardStream: s.StandardStream}).handleMessage)
@@ -70,7 +72,9 @@ func (s *Stream) Connect(ctx context.Context) error {
 		return err
 	}
 	s.EmitStart()
+
 	go s.pollKLines(ctx)
+	go s.pollBalances(ctx)
 
 	go func() {
 		// https://docs.ftx.com/?javascript#request-process
@@ -144,18 +148,38 @@ func (s *Stream) Subscribe(channel types.Channel, symbol string, option types.Su
 	}
 }
 
-func (s *Stream) pollKLines(ctx context.Context) {
+func (s *Stream) pollBalances(ctx context.Context) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
 
-	lastClosed := map[types.Interval]time.Time{}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-ticker.C:
+			balances, err := s.exchange.QueryAccountBalances(ctx)
+			if err != nil {
+				log.WithError(err).Errorf("query balance error")
+				continue
+			}
+			s.EmitBalanceSnapshot(balances)
+		}
+	}
+}
+
+func (s *Stream) pollKLines(ctx context.Context) {
+	lastClosed := make(map[string]map[types.Interval]time.Time, 0)
 	// get current kline candle
 	for _, sub := range s.klineSubscriptions {
 		klines := getLast2KLine(s.exchange, ctx, sub.symbol, sub.interval)
+		lastClosed[sub.symbol] = make(map[types.Interval]time.Time, 0)
 		if len(klines) > 0 {
 			// handle mutiple klines, get the latest one
-			if lastClosed[sub.interval].Unix() < klines[0].StartTime.Unix() {
+			if lastClosed[sub.symbol][sub.interval].Unix() < klines[0].StartTime.Unix() {
 				s.EmitKLine(klines[0])
 				s.EmitKLineClosed(klines[0])
-				lastClosed[sub.interval] = klines[0].StartTime.Time()
+				lastClosed[sub.symbol][sub.interval] = klines[0].StartTime.Time()
 			}
 
 			if len(klines) > 1 {
@@ -187,10 +211,10 @@ func (s *Stream) pollKLines(ctx context.Context) {
 
 				if len(klines) > 0 {
 					// handle mutiple klines, get the latest one
-					if lastClosed[sub.interval].Unix() < klines[0].StartTime.Unix() {
+					if lastClosed[sub.symbol][sub.interval].Unix() < klines[0].StartTime.Unix() {
 						s.EmitKLine(klines[0])
 						s.EmitKLineClosed(klines[0])
-						lastClosed[sub.interval] = klines[0].StartTime.Time()
+						lastClosed[sub.symbol][sub.interval] = klines[0].StartTime.Time()
 					}
 
 					if len(klines) > 1 {

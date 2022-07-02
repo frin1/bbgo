@@ -8,7 +8,7 @@ import (
 	"github.com/c9s/bbgo/pkg/fixedpoint"
 
 	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 	"github.com/slack-go/slack"
 
 	"github.com/c9s/bbgo/pkg/bbgo"
@@ -20,6 +20,8 @@ import (
 const ID = "xnav"
 
 const stateKey = "state-v1"
+
+var log = logrus.WithField("strategy", ID)
 
 func init() {
 	bbgo.RegisterStrategy(ID, &Strategy{})
@@ -56,11 +58,10 @@ func (s *State) Reset() {
 }
 
 type Strategy struct {
-	Notifiability *bbgo.Notifiability
-	*bbgo.Graceful
 	*bbgo.Persistence
+	*bbgo.Environment
 
-	Interval      types.Duration `json:"interval"`
+	Interval      types.Interval `json:"interval"`
 	ReportOnStart bool           `json:"reportOnStart"`
 	IgnoreDusts   bool           `json:"ignoreDusts"`
 	state         *State
@@ -75,43 +76,54 @@ var Ten = fixedpoint.NewFromInt(10)
 func (s *Strategy) CrossSubscribe(sessions map[string]*bbgo.ExchangeSession) {}
 
 func (s *Strategy) recordNetAssetValue(ctx context.Context, sessions map[string]*bbgo.ExchangeSession) {
-	totalAssets := types.AssetMap{}
 	totalBalances := types.BalanceMap{}
-	lastPrices := map[string]fixedpoint.Value{}
-	for _, session := range sessions {
-		balances := session.Account.Balances()
-		if err := session.UpdatePrices(ctx); err != nil {
+	allPrices := map[string]fixedpoint.Value{}
+	sessionBalances := map[string]types.BalanceMap{}
+	priceTime := time.Now()
+
+	// iterate the sessions and record them
+	for sessionName, session := range sessions {
+		// update the account balances and the margin information
+		if _, err := session.UpdateAccount(ctx); err != nil {
+			log.WithError(err).Errorf("can not update account")
+			return
+		}
+
+		account := session.GetAccount()
+		balances := account.Balances()
+		if err := session.UpdatePrices(ctx, balances.Currencies(), "USDT"); err != nil {
 			log.WithError(err).Error("price update failed")
 			return
 		}
 
-		for _, b := range balances {
-			if tb, ok := totalBalances[b.Currency]; ok {
-				tb.Available = tb.Available.Add(b.Available)
-				tb.Locked = tb.Locked.Add(b.Locked)
-				totalBalances[b.Currency] = tb
-			} else {
-				totalBalances[b.Currency] = b
-			}
-		}
+		sessionBalances[sessionName] = balances
+		totalBalances = totalBalances.Add(balances)
 
 		prices := session.LastPrices()
+		assets := balances.Assets(prices, priceTime)
+
+		// merge prices
 		for m, p := range prices {
-			lastPrices[m] = p
+			allPrices[m] = p
 		}
+
+		s.Environment.RecordAsset(priceTime, session, assets)
 	}
 
-	assets := totalBalances.Assets(lastPrices)
-	for currency, asset := range assets {
+	displayAssets := types.AssetMap{}
+	totalAssets := totalBalances.Assets(allPrices, priceTime)
+	s.Environment.RecordAsset(priceTime, &bbgo.ExchangeSession{Name: "ALL"}, totalAssets)
+
+	for currency, asset := range totalAssets {
 		// calculated if it's dust only when InUSD (usd value) is defined.
 		if s.IgnoreDusts && !asset.InUSD.IsZero() && asset.InUSD.Compare(Ten) < 0 {
 			continue
 		}
 
-		totalAssets[currency] = asset
+		displayAssets[currency] = asset
 	}
 
-	s.Notifiability.Notify(totalAssets)
+	bbgo.Notify(displayAssets)
 
 	if s.state != nil {
 		if s.state.IsOver24Hours() {
@@ -152,22 +164,22 @@ func (s *Strategy) LoadState() error {
 		// s.state.Asset = s.Asset
 
 		log.Infof("%s state is restored: %+v", ID, s.state)
-		s.Notifiability.Notify("%s state is restored", ID, s.state)
+		bbgo.Notify("%s state is restored", ID, s.state)
 	}
 
 	return nil
 }
 
 func (s *Strategy) CrossRun(ctx context.Context, _ bbgo.OrderExecutionRouter, sessions map[string]*bbgo.ExchangeSession) error {
-	if s.Interval == 0 {
-		return errors.New("interval can not be zero")
+	if s.Interval == "" {
+		return errors.New("interval can not be empty")
 	}
 
 	if err := s.LoadState(); err != nil {
 		return err
 	}
 
-	s.Graceful.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
+	bbgo.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
 		defer wg.Done()
 
 		s.SaveState()
@@ -175,6 +187,15 @@ func (s *Strategy) CrossRun(ctx context.Context, _ bbgo.OrderExecutionRouter, se
 
 	if s.ReportOnStart {
 		s.recordNetAssetValue(ctx, sessions)
+	}
+
+	if s.Environment.BacktestService != nil {
+		log.Warnf("xnav does not support backtesting")
+	}
+
+	// TODO: if interval is supported, we can use kline as the ticker
+	if _, ok := types.SupportedIntervals[s.Interval]; ok {
+
 	}
 
 	go func() {

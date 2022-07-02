@@ -52,7 +52,7 @@ func NewTrailingStopController(symbol string, config *TrailingStop) *TrailingSto
 
 func (c *TrailingStopController) Subscribe(session *ExchangeSession) {
 	session.Subscribe(types.KLineChannel, c.Symbol, types.SubscribeOptions{
-		Interval: c.Interval.String(),
+		Interval: c.Interval,
 	})
 }
 
@@ -128,7 +128,7 @@ func (c *TrailingStopController) Run(ctx context.Context, session *ExchangeSessi
 
 			log.Infof("current %s position: %s", c.Symbol, c.position.String())
 
-			marketOrder := c.position.NewClosePositionOrder(c.ClosePosition)
+			marketOrder := c.position.NewMarketCloseOrder(c.ClosePosition)
 			if marketOrder != nil {
 				log.Infof("submitting %s market order to stop: %+v", c.Symbol, marketOrder)
 

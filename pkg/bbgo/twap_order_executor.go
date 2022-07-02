@@ -36,7 +36,7 @@ type TwapExecution struct {
 	currentPrice   fixedpoint.Value
 	activePosition fixedpoint.Value
 
-	activeMakerOrders *LocalActiveOrderBook
+	activeMakerOrders *ActiveOrderBook
 	orderStore        *OrderStore
 	position          *types.Position
 
@@ -161,13 +161,13 @@ func (e *TwapExecution) newBestPriceOrder() (orderForm types.SubmitOrder, err er
 	switch e.Side {
 	case types.SideTypeSell:
 		// check base balance for sell, try to sell as more as possible
-		if b, ok := e.Session.Account.Balance(e.market.BaseCurrency); ok {
+		if b, ok := e.Session.GetAccount().Balance(e.market.BaseCurrency); ok {
 			orderQuantity = fixedpoint.Min(b.Available, orderQuantity)
 		}
 
 	case types.SideTypeBuy:
 		// check base balance for sell, try to sell as more as possible
-		if b, ok := e.Session.Account.Balance(e.market.QuoteCurrency); ok {
+		if b, ok := e.Session.GetAccount().Balance(e.market.QuoteCurrency); ok {
 			orderQuantity = AdjustQuantityByMaxAmount(orderQuantity, newPrice, b.Available)
 		}
 	}
@@ -408,7 +408,7 @@ func (e *TwapExecution) Run(parentCtx context.Context) error {
 
 	e.orderStore = NewOrderStore(e.Symbol)
 	e.orderStore.BindStream(e.userDataStream)
-	e.activeMakerOrders = NewLocalActiveOrderBook(e.Symbol)
+	e.activeMakerOrders = NewActiveOrderBook(e.Symbol)
 	e.activeMakerOrders.OnFilled(e.handleFilledOrder)
 	e.activeMakerOrders.BindStream(e.userDataStream)
 

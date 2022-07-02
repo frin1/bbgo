@@ -41,20 +41,20 @@ type BOLL struct {
 
 type BandType int
 
-func (inc *BOLL) GetUpBand() types.Series {
-	return &inc.UpBand
+func (inc *BOLL) GetUpBand() types.SeriesExtend {
+	return types.NewSeries(&inc.UpBand)
 }
 
-func (inc *BOLL) GetDownBand() types.Series {
-	return &inc.DownBand
+func (inc *BOLL) GetDownBand() types.SeriesExtend {
+	return types.NewSeries(&inc.DownBand)
 }
 
-func (inc *BOLL) GetSMA() types.Series {
-	return &inc.SMA
+func (inc *BOLL) GetSMA() types.SeriesExtend {
+	return types.NewSeries(&inc.SMA)
 }
 
-func (inc *BOLL) GetStdDev() types.Series {
-	return &inc.StdDev
+func (inc *BOLL) GetStdDev() types.SeriesExtend {
+	return types.NewSeries(&inc.StdDev)
 }
 
 func (inc *BOLL) LastUpBand() float64 {
@@ -88,7 +88,7 @@ func (inc *BOLL) LastSMA() float64 {
 	return 0.0
 }
 
-func (inc *BOLL) calculateAndUpdate(kLines []types.KLine) {
+func (inc *BOLL) Update(kLines []types.KLine) {
 	if len(kLines) < inc.Window {
 		return
 	}
@@ -142,7 +142,7 @@ func (inc *BOLL) handleKLineWindowUpdate(interval types.Interval, window types.K
 		return
 	}
 
-	inc.calculateAndUpdate(window)
+	inc.Update(window)
 }
 
 func (inc *BOLL) Bind(updater KLineWindowUpdater) {

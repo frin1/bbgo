@@ -3,6 +3,7 @@ package depth
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -40,7 +41,7 @@ type Buffer struct {
 	updateTimeout time.Duration
 
 	// bufferingPeriod is used to buffer the update message before we get the full depth
-	bufferingPeriod time.Duration
+	bufferingPeriod atomic.Value
 }
 
 func NewBuffer(fetcher SnapshotFetcher) *Buffer {
@@ -55,7 +56,7 @@ func (b *Buffer) SetUpdateTimeout(d time.Duration) {
 }
 
 func (b *Buffer) SetBufferingPeriod(d time.Duration) {
-	b.bufferingPeriod = d
+	b.bufferingPeriod.Store(d)
 }
 
 func (b *Buffer) resetSnapshot() {
@@ -91,9 +92,6 @@ func (b *Buffer) AddUpdate(o types.SliceOrderBook, firstUpdateID int64, finalArg
 		Object:        o,
 	}
 
-	// we lock here because there might be 2+ calls to the AddUpdate method
-	// we don't want to reset sync.Once 2 times here
-	b.mu.Lock()
 	select {
 	case <-b.resetC:
 		log.Warnf("received depth reset signal, resetting...")
@@ -104,6 +102,7 @@ func (b *Buffer) AddUpdate(o types.SliceOrderBook, firstUpdateID int64, finalArg
 	}
 
 	// if the snapshot is set to nil, we need to buffer the message
+	b.mu.Lock()
 	if b.snapshot == nil {
 		b.buffer = append(b.buffer, u)
 		b.once.Do(func() {
@@ -117,19 +116,21 @@ func (b *Buffer) AddUpdate(o types.SliceOrderBook, firstUpdateID int64, finalArg
 	if u.FirstUpdateID > b.finalUpdateID+1 {
 		// emitReset will reset the once outside the mutex lock section
 		b.buffer = []Update{u}
+		finalUpdateID = b.finalUpdateID
 		b.resetSnapshot()
 		b.emitReset()
 		b.mu.Unlock()
 		return fmt.Errorf("found missing update between finalUpdateID %d and firstUpdateID %d, diff: %d",
-			b.finalUpdateID+1,
+			finalUpdateID+1,
 			u.FirstUpdateID,
-			u.FirstUpdateID-b.finalUpdateID)
+			u.FirstUpdateID-finalUpdateID)
 	}
 
 	log.Debugf("depth update id %d -> %d", b.finalUpdateID, u.FinalUpdateID)
 	b.finalUpdateID = u.FinalUpdateID
-	b.EmitPush(u)
 	b.mu.Unlock()
+
+	b.EmitPush(u)
 	return nil
 }
 
@@ -139,9 +140,9 @@ func (b *Buffer) fetchAndPush() error {
 		return err
 	}
 
+	b.mu.Lock()
 	log.Debugf("fetched depth snapshot, final update id %d", finalUpdateID)
 
-	b.mu.Lock()
 	if len(b.buffer) > 0 {
 		// the snapshot is too early
 		if finalUpdateID < b.buffer[0].FirstUpdateID {
@@ -182,14 +183,16 @@ func (b *Buffer) fetchAndPush() error {
 	b.snapshot = &book
 
 	b.mu.Unlock()
+
+	// should unlock first then call ready
 	b.EmitReady(book, pushUpdates)
 	return nil
 }
 
 func (b *Buffer) tryFetch() {
 	for {
-		if b.bufferingPeriod > 0 {
-			<-time.After(b.bufferingPeriod)
+		if period := b.bufferingPeriod.Load(); period != nil {
+			<-time.After(period.(time.Duration))
 		}
 
 		err := b.fetchAndPush()

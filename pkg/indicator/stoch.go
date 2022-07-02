@@ -20,22 +20,26 @@ type STOCH struct {
 	K types.Float64Slice
 	D types.Float64Slice
 
-	KLineWindow types.KLineWindow
+	HighValues types.Float64Slice
+	LowValues  types.Float64Slice
 
 	EndTime         time.Time
 	UpdateCallbacks []func(k float64, d float64)
 }
 
-func (inc *STOCH) update(kLine types.KLine) {
-	inc.KLineWindow.Add(kLine)
-	inc.KLineWindow.Truncate(inc.Window)
+func (inc *STOCH) Update(high, low, cloze float64) {
+	inc.HighValues.Push(high)
+	inc.LowValues.Push(low)
 
-	lowest := inc.KLineWindow.GetLow().Float64()
-	highest := inc.KLineWindow.GetHigh().Float64()
-	clos := kLine.Close.Float64()
+	lowest := inc.LowValues.Tail(inc.Window).Min()
+	highest := inc.HighValues.Tail(inc.Window).Max()
 
-	k := 100.0 * (clos - lowest) / (highest - lowest)
-	inc.K.Push(k)
+	if highest == lowest {
+		inc.K.Push(50.0)
+	} else {
+		k := 100.0 * (cloze - lowest) / (highest - lowest)
+		inc.K.Push(k)
+	}
 
 	d := inc.K.Tail(DPeriod).Mean()
 	inc.D.Push(d)
@@ -61,10 +65,10 @@ func (inc *STOCH) calculateAndUpdate(kLines []types.KLine) {
 	}
 
 	for _, k := range kLines {
-		if inc.EndTime != zeroTime && k.EndTime.Before(inc.EndTime) {
+		if inc.EndTime != zeroTime && !k.EndTime.After(inc.EndTime) {
 			continue
 		}
-		inc.update(k)
+		inc.Update(k.High.Float64(), k.Low.Float64(), k.Close.Float64())
 	}
 
 	inc.EmitUpdate(inc.LastK(), inc.LastD())

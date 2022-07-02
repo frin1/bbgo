@@ -2,12 +2,7 @@ package types
 
 import (
 	"fmt"
-	"sort"
-	"strings"
 	"sync"
-	"time"
-
-	"github.com/slack-go/slack"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
@@ -21,211 +16,19 @@ func init() {
 	debugBalance = viper.GetBool("debug-balance")
 }
 
-type Balance struct {
-	Currency  string           `json:"currency"`
-	Available fixedpoint.Value `json:"available"`
-	Locked    fixedpoint.Value `json:"locked,omitempty"`
-}
-
-func (b Balance) Total() fixedpoint.Value {
-	return b.Available.Add(b.Locked)
-}
-
-func (b Balance) String() string {
-	if b.Locked.Sign() > 0 {
-		return fmt.Sprintf("%s: %v (locked %v)", b.Currency, b.Available, b.Locked)
-	}
-
-	return fmt.Sprintf("%s: %s", b.Currency, b.Available.String())
-}
-
-type Asset struct {
-	Currency  string           `json:"currency" db:"currency"`
-	Total     fixedpoint.Value `json:"total" db:"total"`
-	InUSD     fixedpoint.Value `json:"inUSD" db:"inUSD"`
-	InBTC     fixedpoint.Value `json:"inBTC" db:"inBTC"`
-	Time      time.Time        `json:"time" db:"time"`
-	Locked    fixedpoint.Value `json:"lock" db:"lock" `
-	Available fixedpoint.Value `json:"available"  db:"available"`
-}
-
-type AssetMap map[string]Asset
-
-func (m AssetMap) PlainText() (o string) {
-	var assets = m.Slice()
-
-	// sort assets
-	sort.Slice(assets, func(i, j int) bool {
-		return assets[i].InUSD.Compare(assets[j].InUSD) > 0
-	})
-
-	sumUsd := fixedpoint.Zero
-	sumBTC := fixedpoint.Zero
-	for _, a := range assets {
-		usd := a.InUSD
-		btc := a.InBTC
-		if !a.InUSD.IsZero() {
-			o += fmt.Sprintf("  %s: %s (≈ %s) (≈ %s)",
-				a.Currency,
-				a.Total.String(),
-				USD.FormatMoney(usd),
-				BTC.FormatMoney(btc),
-			) + "\n"
-			sumUsd = sumUsd.Add(usd)
-			sumBTC = sumBTC.Add(btc)
-		} else {
-			o += fmt.Sprintf("  %s: %s",
-				a.Currency,
-				a.Total.String(),
-			) + "\n"
-		}
-	}
-	o += fmt.Sprintf(" Summary: (≈ %s) (≈ %s)",
-		USD.FormatMoney(sumUsd),
-		BTC.FormatMoney(sumBTC),
-	) + "\n"
-	return o
-}
-
-func (m AssetMap) Slice() (assets []Asset) {
-	for _, a := range m {
-		assets = append(assets, a)
-	}
-	return assets
-}
-
-func (m AssetMap) SlackAttachment() slack.Attachment {
-	var fields []slack.AttachmentField
-	var totalBTC, totalUSD fixedpoint.Value
-
-	var assets = m.Slice()
-
-	// sort assets
-	sort.Slice(assets, func(i, j int) bool {
-		return assets[i].InUSD.Compare(assets[j].InUSD) > 0
-	})
-
-	for _, a := range assets {
-		totalUSD = totalUSD.Add(a.InUSD)
-		totalBTC = totalBTC.Add(a.InBTC)
-	}
-
-	for _, a := range assets {
-		if !a.InUSD.IsZero() {
-			fields = append(fields, slack.AttachmentField{
-				Title: a.Currency,
-				Value: fmt.Sprintf("%s (≈ %s) (≈ %s) (%s)",
-					a.Total.String(),
-					USD.FormatMoney(a.InUSD),
-					BTC.FormatMoney(a.InBTC),
-					a.InUSD.Div(totalUSD).FormatPercentage(2),
-				),
-				Short: false,
-			})
-		} else {
-			fields = append(fields, slack.AttachmentField{
-				Title: a.Currency,
-				Value: fmt.Sprintf("%s", a.Total.String()),
-				Short: false,
-			})
-		}
-	}
-
-	return slack.Attachment{
-		Title: fmt.Sprintf("Net Asset Value %s (≈ %s)",
-			USD.FormatMoney(totalUSD),
-			BTC.FormatMoney(totalBTC),
-		),
-		Fields: fields,
-	}
-}
-
-type BalanceMap map[string]Balance
 type PositionMap map[string]Position
 type IsolatedMarginAssetMap map[string]IsolatedMarginAsset
 type MarginAssetMap map[string]MarginUserAsset
 type FuturesAssetMap map[string]FuturesUserAsset
 type FuturesPositionMap map[string]FuturesPosition
 
-func (m BalanceMap) String() string {
-	var ss []string
-	for _, b := range m {
-		ss = append(ss, b.String())
-	}
-
-	return "BalanceMap[" + strings.Join(ss, ", ") + "]"
-}
-
-func (m BalanceMap) Copy() (d BalanceMap) {
-	d = make(BalanceMap)
-	for c, b := range m {
-		d[c] = b
-	}
-	return d
-}
-
-func (m BalanceMap) Assets(prices map[string]fixedpoint.Value) AssetMap {
-	assets := make(AssetMap)
-
-	now := time.Now()
-	for currency, b := range m {
-		if b.Locked.IsZero() && b.Available.IsZero() {
-			continue
-		}
-
-		asset := Asset{
-			Currency:  currency,
-			Total:     b.Available.Add(b.Locked),
-			Time:      now,
-			Locked:    b.Locked,
-			Available: b.Available,
-		}
-
-		btcusdt, hasBtcPrice := prices["BTCUSDT"]
-
-		usdMarkets := []string{currency + "USDT", currency + "USDC", currency + "USD", "USDT" + currency}
-
-		for _, market := range usdMarkets {
-			if val, ok := prices[market]; ok {
-
-				if strings.HasPrefix(market, "USD") {
-					asset.InUSD = asset.Total.Div(val)
-				} else {
-					asset.InUSD = asset.Total.Mul(val)
-				}
-
-				if hasBtcPrice {
-					asset.InBTC = asset.InUSD.Div(btcusdt)
-				}
-			}
-		}
-
-		assets[currency] = asset
-	}
-
-	return assets
-}
-
-func (m BalanceMap) Print() {
-	for _, balance := range m {
-		if balance.Available.IsZero() && balance.Locked.IsZero() {
-			continue
-		}
-
-		if balance.Locked.Sign() > 0 {
-			logrus.Infof(" %s: %v (locked %v)", balance.Currency, balance.Available, balance.Locked)
-		} else {
-			logrus.Infof(" %s: %v", balance.Currency, balance.Available)
-		}
-	}
-}
-
 type AccountType string
 
 const (
-	AccountTypeFutures = AccountType("futures")
-	AccountTypeMargin  = AccountType("margin")
-	AccountTypeSpot    = AccountType("spot")
+	AccountTypeFutures        = AccountType("futures")
+	AccountTypeMargin         = AccountType("margin")
+	AccountTypeIsolatedMargin = AccountType("isolated_margin")
+	AccountTypeSpot           = AccountType("spot")
 )
 
 type Account struct {
@@ -235,6 +38,23 @@ type Account struct {
 	FuturesInfo        *FuturesAccountInfo
 	MarginInfo         *MarginAccountInfo
 	IsolatedMarginInfo *IsolatedMarginAccountInfo
+
+	// Margin related common field
+	// From binance:
+	// Margin Level = Total Asset Value / (Total Borrowed + Total Accrued Interest)
+	// If your margin level drops to 1.3, you will receive a Margin Call, which is a reminder that you should either increase your collateral (by depositing more funds) or reduce your loan (by repaying what you’ve borrowed).
+	// If your margin level drops to 1.1, your assets will be automatically liquidated, meaning that Binance will sell your funds at market price to repay the loan.
+	MarginLevel     fixedpoint.Value `json:"marginLevel,omitempty"`
+	MarginTolerance fixedpoint.Value `json:"marginTolerance,omitempty"`
+
+	BorrowEnabled   bool `json:"borrowEnabled,omitempty"`
+	TransferEnabled bool `json:"transferEnabled,omitempty"`
+
+	// isolated margin related fields
+	// LiquidationPrice is only used when account is in the isolated margin mode
+	MarginRatio      fixedpoint.Value `json:"marginRatio,omitempty"`
+	LiquidationPrice fixedpoint.Value `json:"liquidationPrice,omitempty"`
+	LiquidationRate  fixedpoint.Value `json:"liquidationRate,omitempty"`
 
 	MakerFeeRate fixedpoint.Value `json:"makerFeeRate,omitempty"`
 	TakerFeeRate fixedpoint.Value `json:"takerFeeRate,omitempty"`
@@ -325,7 +145,12 @@ func (a *Account) UseLockedBalance(currency string, fund fixedpoint.Value) error
 	defer a.Unlock()
 
 	balance, ok := a.balances[currency]
-	if ok && balance.Locked.Compare(fund) >= 0 {
+	if !ok {
+		return fmt.Errorf("account balance %s does not exist", currency)
+	}
+
+	// simple case, using fund less than locked
+	if balance.Locked.Compare(fund) >= 0 {
 		balance.Locked = balance.Locked.Sub(fund)
 		a.balances[currency] = balance
 		return nil
@@ -390,18 +215,6 @@ func (a *Account) UpdateBalances(balances BalanceMap) {
 
 	for _, balance := range balances {
 		a.balances[balance.Currency] = balance
-	}
-}
-
-func printBalanceUpdate(balances BalanceMap) {
-	logrus.Infof("balance update: %+v", balances)
-}
-
-func (a *Account) BindStream(stream Stream) {
-	stream.OnBalanceUpdate(a.UpdateBalances)
-	stream.OnBalanceSnapshot(a.UpdateBalances)
-	if debugBalance {
-		stream.OnBalanceUpdate(printBalanceUpdate)
 	}
 }
 

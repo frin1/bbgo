@@ -17,6 +17,7 @@ Volume-Weighted Average Price (VWAP) Explained
 */
 //go:generate callbackgen -type VWAP
 type VWAP struct {
+	types.SeriesBase
 	types.IntervalWindow
 	Values      types.Float64Slice
 	Prices      types.Float64Slice
@@ -26,6 +27,26 @@ type VWAP struct {
 
 	EndTime         time.Time
 	UpdateCallbacks []func(value float64)
+}
+
+func (inc *VWAP) Update(price, volume float64) {
+	if len(inc.Prices) == 0 {
+		inc.SeriesBase.Series = inc
+	}
+	inc.Prices.Push(price)
+	inc.Volumes.Push(volume)
+
+	if inc.Window != 0 && len(inc.Prices) > inc.Window {
+		popIndex := len(inc.Prices) - inc.Window - 1
+		inc.WeightedSum -= inc.Prices[popIndex] * inc.Volumes[popIndex]
+		inc.VolumeSum -= inc.Volumes[popIndex]
+	}
+
+	inc.WeightedSum += price * volume
+	inc.VolumeSum += volume
+
+	vwap := inc.WeightedSum / inc.VolumeSum
+	inc.Values.Push(vwap)
 }
 
 func (inc *VWAP) Last() float64 {
@@ -48,36 +69,16 @@ func (inc *VWAP) Length() int {
 	return len(inc.Values)
 }
 
-var _ types.Series = &VWAP{}
-
-func (inc *VWAP) Update(kLine types.KLine, priceF KLinePriceMapper) {
-	price := priceF(kLine)
-	volume := kLine.Volume.Float64()
-
-	inc.Prices.Push(price)
-	inc.Volumes.Push(volume)
-
-	if inc.Window != 0 && len(inc.Prices) > inc.Window {
-		popIndex := len(inc.Prices) - inc.Window - 1
-		inc.WeightedSum -= inc.Prices[popIndex] * inc.Volumes[popIndex]
-		inc.VolumeSum -= inc.Volumes[popIndex]
-	}
-
-	inc.WeightedSum += price * volume
-	inc.VolumeSum += volume
-
-	vwap := inc.WeightedSum / inc.VolumeSum
-	inc.Values.Push(vwap)
-}
+var _ types.SeriesExtend = &VWAP{}
 
 func (inc *VWAP) calculateAndUpdate(kLines []types.KLine) {
 	var priceF = KLineTypicalPriceMapper
 
 	for _, k := range kLines {
-		if inc.EndTime != zeroTime && k.EndTime.Before(inc.EndTime) {
+		if inc.EndTime != zeroTime && !k.EndTime.After(inc.EndTime) {
 			continue
 		}
-		inc.Update(k, priceF)
+		inc.Update(priceF(k), k.Volume.Float64())
 	}
 
 	inc.EmitUpdate(inc.Last())
@@ -99,7 +100,7 @@ func (inc *VWAP) Bind(updater KLineWindowUpdater) {
 func CalculateVWAP(klines []types.KLine, priceF KLinePriceMapper, window int) float64 {
 	vwap := VWAP{IntervalWindow: types.IntervalWindow{Window: window}}
 	for _, k := range klines {
-		vwap.Update(k, priceF)
+		vwap.Update(priceF(k), k.Volume.Float64())
 	}
 	return vwap.Last()
 }

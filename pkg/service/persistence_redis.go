@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/go-redis/redis/v8"
+	log "github.com/sirupsen/logrus"
 )
 
 type RedisPersistenceService struct {
@@ -18,6 +19,7 @@ func NewRedisPersistenceService(config *RedisPersistenceConfig) *RedisPersistenc
 	client := redis.NewClient(&redis.Options{
 		Addr: net.JoinHostPort(config.Host, config.Port),
 		// Username:           "", // username is only for redis 6.0
+		// pragma: allowlist nextline secret
 		Password: config.Password, // no password set
 		DB:       config.DB,       // use default DB
 	})
@@ -49,9 +51,11 @@ func (store *RedisStore) Load(val interface{}) error {
 		return errors.New("can not load from redis, possible cause: redis persistence is not configured, or you are trying to use redis in back-test")
 	}
 
-
 	cmd := store.redis.Get(context.Background(), store.ID)
 	data, err := cmd.Result()
+
+	log.Debugf("[redis] get key %q, data = %s", store.ID, string(data))
+
 	if err != nil {
 		if err == redis.Nil {
 			return ErrPersistenceNotExists
@@ -60,7 +64,8 @@ func (store *RedisStore) Load(val interface{}) error {
 		return err
 	}
 
-	if len(data) == 0 {
+	// skip null data
+	if len(data) == 0 || data == "null" {
 		return ErrPersistenceNotExists
 	}
 
@@ -68,6 +73,10 @@ func (store *RedisStore) Load(val interface{}) error {
 }
 
 func (store *RedisStore) Save(val interface{}) error {
+	if val == nil {
+		return nil
+	}
+
 	data, err := json.Marshal(val)
 	if err != nil {
 		return err
@@ -75,6 +84,9 @@ func (store *RedisStore) Save(val interface{}) error {
 
 	cmd := store.redis.Set(context.Background(), store.ID, data, 0)
 	_, err = cmd.Result()
+
+	log.Debugf("[redis] set key %q, data = %s", store.ID, string(data))
+
 	return err
 }
 

@@ -16,15 +16,17 @@ backtest:
   # for testing max draw down (MDD) at 03-12
   # see here for more details
   # https://www.investopedia.com/terms/m/maximum-drawdown-mdd.asp
-  startTime: "2021-08-01"
-  endTime: "2021-08-30"
+  startTime: "2022-01-01"
+  endTime: "2022-05-12"
+  sessions:
+  - binance
   symbols:
   - ETHUSDT
-  account:
+  accounts:
     binance:
       balances:
-        ETH: 1.0
-        USDT: 20_000.0
+        ETH: 0.0
+        USDT: 10_000.0
 
 exchangeStrategies:
 
@@ -41,7 +43,7 @@ exchangeStrategies:
     # useTickerPrice use the ticker api to get the mid price instead of the closed kline price.
     # The back-test engine is kline-based, so the ticker price api is not supported.
     # Turn this on if you want to do real trading.
-    useTickerPrice: false
+    useTickerPrice: true
 
     # spread is the price spread from the middle price.
     # For ask orders, the ask price is ((bestAsk + bestBid) / 2 * (1.0 + spread))
@@ -53,6 +55,33 @@ exchangeStrategies:
     # For long position, you will only place sell order above the price (= average cost * (1 + minProfitSpread))
     # For short position, you will only place buy order below the price (= average cost * (1 - minProfitSpread))
     minProfitSpread: 0.1%
+
+    # EXPERIMENTAL
+    #   Dynamic spread is an experimental feature. Use at your own risk!
+    #
+    #   dynamicSpread enables the automatic adjustment to bid and ask spread.
+    # dynamicSpread:
+    #   enabled: true
+    #   # window is the window of the SMAs of spreads
+    #   window: 1
+    #   askSpreadScale:
+    #     byPercentage:
+    #       # exp means we want to use exponential scale, you can replace "exp" with "linear" for linear scale
+    #       exp:
+    #         # from down to up
+    #         domain: [ 0.0001, 0.005 ]
+    #         # when in down band, holds 1.0 by maximum
+    #         # when in up band, holds 0.05 by maximum
+    #         range: [ 0.001, 0.002 ]
+    #   bidSpreadScale:
+    #     byPercentage:
+    #       # exp means we want to use exponential scale, you can replace "exp" with "linear" for linear scale
+    #       exp:
+    #         # from down to up
+    #         domain: [ 0.0001, 0.005 ]
+    #         # when in down band, holds 1.0 by maximum
+    #         # when in up band, holds 0.05 by maximum
+    #         range: [ 0.001, 0.002 ]
 
     # maxExposurePosition is the maximum position you can hold
     # +10 means you can hold 10 ETH long position by maximum
@@ -103,9 +132,6 @@ exchangeStrategies:
 
     # buyBelowNeutralSMA: when this set, it will only place buy order when the current price is below the SMA line.
     buyBelowNeutralSMA: false
-
-    persistence:
-      type: redis
 
     # Set up your stop order, this is optional
     # sometimes the stop order might decrease your total profit.

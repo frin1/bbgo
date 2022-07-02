@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 
 import bbgo_pb2
 
 from ..enums import OrderType
 from ..enums import SideType
+from ..utils import parse_number
+from ..utils import parse_time
 
 
 @dataclass
@@ -16,11 +19,11 @@ class Order:
     order_id: str
     side: SideType
     order_type: OrderType
-    price: float
-    stop_price: float
+    price: Decimal
+    stop_price: Decimal
     status: str
-    quantity: float
-    executed_quantity: float
+    quantity: Decimal
+    executed_quantity: Decimal
     client_order_id: str
     group_id: int
     created_at: datetime
@@ -31,14 +34,14 @@ class Order:
             exchange=obj.exchange,
             symbol=obj.symbol,
             order_id=obj.id,
-            side=SideType.from_pb(obj.side),
-            order_type=OrderType.from_pb(obj.order_type),
-            price=float(obj.price),
-            stop_price=float(obj.stop_price),
+            side=SideType(obj.side),
+            order_type=OrderType(obj.order_type),
+            price=parse_number(obj.price),
+            stop_price=parse_number(obj.stop_price),
             status=obj.status,
-            quantity=float(obj.quantity),
-            executed_quantity=float(obj.executed_quantity),
+            quantity=parse_number(obj.quantity),
+            executed_quantity=parse_number(obj.executed_quantity),
             client_order_id=obj.client_order_id,
             group_id=obj.group_id,
-            created_at=datetime.fromtimestamp(obj.created_at / 1000),
+            created_at=parse_time(obj.created_at),
         )

@@ -30,6 +30,8 @@ var logger = logrus.WithField("exchange", "ftx")
 // POST https://ftx.com/api/orders 429, Success: false, err: Do not send more than 2 orders on this market per 200ms
 var requestLimit = rate.NewLimiter(rate.Every(220*time.Millisecond), 2)
 
+var marketDataLimiter = rate.NewLimiter(rate.Every(500*time.Millisecond), 2)
+
 //go:generate go run generate_symbol_map.go
 
 type Exchange struct {
@@ -88,8 +90,9 @@ func NewExchange(key, secret string, subAccount string) *Exchange {
 		client:       client,
 		restEndpoint: u,
 		key:          key,
-		secret:       secret,
-		subAccount:   subAccount,
+		// pragma: allowlist nextline secret
+		secret:     secret,
+		subAccount: subAccount,
 	}
 }
 
@@ -216,6 +219,7 @@ var supportedIntervals = map[types.Interval]int{
 	types.Interval5m:  5,
 	types.Interval15m: 15,
 	types.Interval1h:  60,
+	types.Interval4h:  60 * 4,
 	types.Interval1d:  60 * 24,
 	types.Interval3d:  60 * 24 * 3,
 }
@@ -230,94 +234,45 @@ func (e *Exchange) IsSupportedInterval(interval types.Interval) bool {
 
 func (e *Exchange) QueryKLines(ctx context.Context, symbol string, interval types.Interval, options types.KLineQueryOptions) ([]types.KLine, error) {
 	var klines []types.KLine
-	var since, until, currentEnd time.Time
-	if options.StartTime != nil {
-		since = *options.StartTime
-	}
-	if options.EndTime != nil {
-		until = *options.EndTime
-	} else {
-		until = time.Now()
-	}
 
-	currentEnd = until
-
-	for {
-
-		// the fetch result is from newest to oldest
-		endTime := currentEnd.Add(interval.Duration())
-		options.EndTime = &endTime
-		lines, err := e._queryKLines(ctx, symbol, interval, types.KLineQueryOptions{
-			StartTime: &since,
-			EndTime:   &currentEnd,
-		})
-
-		if err != nil {
-			return nil, err
-		}
-
-		if len(lines) == 0 {
-			break
-		}
-
-		for _, line := range lines {
-
-			if line.StartTime.Unix() < currentEnd.Unix() {
-				currentEnd = line.StartTime.Time()
-			}
-
-			if line.StartTime.Unix() > since.Unix() {
-				klines = append(klines, line)
-			}
-		}
-
-		if len(lines) == 1 && lines[0].StartTime.Unix() == currentEnd.Unix() {
-			break
-		}
-
-		outBound := currentEnd.Add(interval.Duration()*-1).Unix() <= since.Unix()
-		if since.IsZero() || currentEnd.Unix() == since.Unix() || outBound {
-			break
-		}
-
-		if options.Limit != 0 && options.Limit <= len(lines) {
-			break
-		}
-	}
-	sort.Slice(klines, func(i, j int) bool { return klines[i].StartTime.Unix() < klines[j].StartTime.Unix() })
-
-	if options.Limit != 0 {
-		limitedItems := len(klines) - options.Limit
-		if limitedItems > 0 {
-			return klines[limitedItems:], nil
-		}
+	// the fetch result is from newest to oldest
+	// currentEnd = until
+	// endTime := currentEnd.Add(interval.Duration())
+	klines, err := e._queryKLines(ctx, symbol, interval, options)
+	if err != nil {
+		return nil, err
 	}
 
+	klines = types.SortKLinesAscending(klines)
 	return klines, nil
 }
 
 func (e *Exchange) _queryKLines(ctx context.Context, symbol string, interval types.Interval, options types.KLineQueryOptions) ([]types.KLine, error) {
-	var since, until time.Time
-	if options.StartTime != nil {
-		since = *options.StartTime
-	}
-	if options.EndTime != nil {
-		until = *options.EndTime
-	} else {
-		until = time.Now()
-	}
-	if since.After(until) {
-		return nil, fmt.Errorf("invalid query klines time range, since: %+v, until: %+v", since, until)
-	}
 	if !isIntervalSupportedInKLine(interval) {
 		return nil, fmt.Errorf("interval %s is not supported", interval.String())
 	}
 
-	if err := requestLimit.Wait(ctx); err != nil {
+	if err := marketDataLimiter.Wait(ctx); err != nil {
 		return nil, err
 	}
 
-	resp, err := e.newRest().HistoricalPrices(ctx, toLocalSymbol(symbol), interval, 0, since, until)
+	// assign limit to a default value since ftx has the limit
+	if options.Limit == 0 {
+		options.Limit = 500
+	}
+
+	// if the time range exceed the ftx valid time range, we need to adjust the endTime
+	if options.StartTime != nil && options.EndTime != nil {
+		rangeDuration := options.EndTime.Sub(*options.StartTime)
+		estimatedCount := rangeDuration / interval.Duration()
+
+		if options.Limit != 0 && uint64(estimatedCount) > uint64(options.Limit) {
+			endTime := options.StartTime.Add(interval.Duration() * time.Duration(options.Limit))
+			options.EndTime = &endTime
+		}
+	}
+
+	resp, err := e.newRest().HistoricalPrices(ctx, toLocalSymbol(symbol), interval, int64(options.Limit), options.StartTime, options.EndTime)
 	if err != nil {
 		return nil, err
 	}
@@ -333,6 +288,7 @@ func (e *Exchange) _queryKLines(ctx context.Context, symbol string, interval typ
 		}
 		klines = append(klines, globalKline)
 	}
+
 	return klines, nil
 }
 
@@ -620,7 +576,10 @@ func (e *Exchange) QueryTickers(ctx context.Context, symbol ...string) (map[stri
 		}
 
 		// ctx context.Context, market string, interval types.Interval, limit int64, start, end time.Time
-		prices, err := rest.HistoricalPrices(ctx, v.Market.LocalSymbol, types.Interval1h, 1, time.Now().Add(time.Duration(-1)*time.Hour), time.Now())
+		now := time.Now()
+		since := now.Add(time.Duration(-1) * time.Hour)
+		until := now
+		prices, err := rest.HistoricalPrices(ctx, v.Market.LocalSymbol, types.Interval1h, 1, &since, &until)
 		if err != nil || !prices.Success || len(prices.Result) == 0 {
 			continue
 		}

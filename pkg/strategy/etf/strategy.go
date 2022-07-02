@@ -2,10 +2,12 @@ package etf
 
 import (
 	"context"
-	"github.com/c9s/bbgo/pkg/fixedpoint"
+	"time"
+
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
-	"time"
+
+	"github.com/c9s/bbgo/pkg/fixedpoint"
 
 	"github.com/c9s/bbgo/pkg/bbgo"
 	"github.com/c9s/bbgo/pkg/types"
@@ -19,8 +21,6 @@ func init() {
 
 type Strategy struct {
 	Market types.Market
-
-	Notifiability *bbgo.Notifiability
 
 	TotalAmount fixedpoint.Value `json:"totalAmount,omitempty"`
 
@@ -50,7 +50,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 		ticker := time.NewTicker(s.Duration.Duration())
 		defer ticker.Stop()
 
-		s.Notifiability.Notify("ETF orders will be executed every %s", s.Duration.Duration().String())
+		bbgo.Notify("ETF orders will be executed every %s", s.Duration.Duration().String())
 
 		for {
 			select {
@@ -64,7 +64,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 
 					ticker, err := session.Exchange.QueryTicker(ctx, symbol)
 					if err != nil {
-						s.Notifiability.Notify("query ticker error: %s", err.Error())
+						bbgo.Notify("query ticker error: %s", err.Error())
 						log.WithError(err).Error("query ticker error")
 						break
 					}
@@ -73,16 +73,16 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 					quantity := askPrice.Div(amount)
 
 					// execute orders
-					quoteBalance, ok := session.Account.Balance(s.Market.QuoteCurrency)
+					quoteBalance, ok := session.GetAccount().Balance(s.Market.QuoteCurrency)
 					if !ok {
 						break
 					}
 					if quoteBalance.Available.Compare(amount) < 0 {
-						s.Notifiability.Notify("Quote balance %s is not enough: %s < %s", s.Market.QuoteCurrency, quoteBalance.Available.String(), amount.String())
+						bbgo.Notify("Quote balance %s is not enough: %s < %s", s.Market.QuoteCurrency, quoteBalance.Available.String(), amount.String())
 						break
 					}
 
-					s.Notifiability.Notify("Submitting etf order %s quantity %s at price %s (index ratio %s)",
+					bbgo.Notify("Submitting etf order %s quantity %s at price %s (index ratio %s)",
 						symbol,
 						quantity.String(),
 						askPrice.String(),

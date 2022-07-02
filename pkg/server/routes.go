@@ -48,7 +48,7 @@ type Server struct {
 	srv *http.Server
 }
 
-func (s *Server) newEngine() *gin.Engine {
+func (s *Server) newEngine(ctx context.Context) *gin.Engine {
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"*"},
@@ -77,11 +77,15 @@ func (s *Server) newEngine() *gin.Engine {
 	})
 
 	r.POST("/api/environment/sync", func(c *gin.Context) {
-		go func() {
-			if err := s.Environ.Sync(context.Background()); err != nil {
-				logrus.WithError(err).Error("sync error")
-			}
-		}()
+		if s.Environ.IsSyncing() != bbgo.Syncing {
+			go func() {
+				// We use the root context here because the syncing operation is a background goroutine.
+				// It should not be terminated if the request is disconnected.
+				if err := s.Environ.Sync(ctx); err != nil {
+					logrus.WithError(err).Error("sync error")
+				}
+			}()
+		}
 
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
@@ -249,7 +253,7 @@ func (s *Server) newEngine() *gin.Engine {
 }
 
 func (s *Server) RunWithListener(ctx context.Context, l net.Listener) error {
-	r := s.newEngine()
+	r := s.newEngine(ctx)
 	bind := l.Addr().String()
 
 	if s.OpenInBrowser {
@@ -261,7 +265,7 @@ func (s *Server) RunWithListener(ctx context.Context, l net.Listener) error {
 }
 
 func (s *Server) Run(ctx context.Context, bindArgs ...string) error {
-	r := s.newEngine()
+	r := s.newEngine(ctx)
 	bind := resolveBind(bindArgs)
 	if s.OpenInBrowser {
 		openBrowser(ctx, bind)
@@ -380,7 +384,7 @@ func (s *Server) getSessionAccount(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"account": session.Account})
+	c.JSON(http.StatusOK, gin.H{"account": session.GetAccount()})
 }
 
 func (s *Server) getSessionAccountBalance(c *gin.Context) {
@@ -397,7 +401,7 @@ func (s *Server) getSessionAccountBalance(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"balances": session.Account.Balances()})
+	c.JSON(http.StatusOK, gin.H{"balances": session.GetAccount().Balances()})
 }
 
 func (s *Server) listSessionOpenOrders(c *gin.Context) {
@@ -442,7 +446,7 @@ func genFakeAssets() types.AssetMap {
 		"DOTUSDT":  fixedpoint.NewFromFloat(20.0),
 		"SANDUSDT": fixedpoint.NewFromFloat(0.13),
 		"MAXUSDT":  fixedpoint.NewFromFloat(0.122),
-	})
+	}, time.Now())
 	for currency, asset := range assets {
 		totalAssets[currency] = asset
 	}
@@ -458,15 +462,15 @@ func (s *Server) listAssets(c *gin.Context) {
 
 	totalAssets := types.AssetMap{}
 	for _, session := range s.Environ.Sessions() {
-		balances := session.Account.Balances()
+		balances := session.GetAccount().Balances()
 
-		if err := session.UpdatePrices(c); err != nil {
+		if err := session.UpdatePrices(c, balances.Currencies(), "USDT"); err != nil {
 			logrus.WithError(err).Error("price update failed")
 			c.Status(http.StatusInternalServerError)
 			return
 		}
 
-		assets := balances.Assets(session.LastPrices())
+		assets := balances.Assets(session.LastPrices(), time.Now())
 
 		for currency, asset := range assets {
 			totalAssets[currency] = asset
@@ -593,7 +597,6 @@ func (s *Server) tradingVolume(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"tradingVolumes": rows})
-	return
 }
 
 func newServer(r http.Handler, bind string) *http.Server {

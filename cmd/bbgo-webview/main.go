@@ -110,6 +110,11 @@ func main() {
 				return
 			}
 
+			if err := trader.LoadState(); err != nil {
+				log.WithError(err).Error("failed to load strategy states")
+				return
+			}
+
 			// for setup mode, we don't start the trader
 			if err := trader.Run(ctx); err != nil {
 				log.WithError(err).Error("failed to start trader")
@@ -118,7 +123,7 @@ func main() {
 	}
 
 	// find a free port for binding the server
-	ln, err := net.Listen("tcp", "127.0.0.1:" + strconv.Itoa(portNum))
+	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(portNum))
 	if err != nil {
 		log.WithError(err).Error("can not bind listener")
 		return

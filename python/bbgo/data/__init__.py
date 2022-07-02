@@ -7,5 +7,7 @@ from .event import MarketDataEvent
 from .event import UserDataEvent
 from .kline import KLine
 from .order import Order
+from .submit_order import SubmitOrder
 from .subscription import Subscription
+from .ticker import Ticker
 from .trade import Trade

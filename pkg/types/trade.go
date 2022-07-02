@@ -27,7 +27,7 @@ type TradeSlice struct {
 
 func (s *TradeSlice) Copy() []Trade {
 	s.mu.Lock()
-	slice := make([]Trade, len(s.Trades), len(s.Trades))
+	slice := make([]Trade, len(s.Trades))
 	copy(slice, s.Trades)
 	s.mu.Unlock()
 
@@ -71,8 +71,37 @@ type Trade struct {
 	IsFutures  bool `json:"isFutures" db:"is_futures"`
 	IsIsolated bool `json:"isIsolated" db:"is_isolated"`
 
-	StrategyID sql.NullString  `json:"strategyID" db:"strategy"`
-	PnL        sql.NullFloat64 `json:"pnl" db:"pnl"`
+	// The following fields are null-able fields
+
+	// StrategyID is the strategy that execute this trade
+	StrategyID sql.NullString `json:"strategyID" db:"strategy"`
+
+	// PnL is the profit and loss value of the executed trade
+	PnL sql.NullFloat64 `json:"pnl" db:"pnl"`
+}
+
+func (trade Trade) CsvHeader() []string {
+	return []string{"id", "order_id", "exchange", "symbol", "price", "quantity", "quote_quantity", "side", "is_buyer", "is_maker", "fee", "fee_currency", "time"}
+}
+
+func (trade Trade) CsvRecords() [][]string {
+	return [][]string{
+		{
+			strconv.FormatUint(trade.ID, 10),
+			strconv.FormatUint(trade.OrderID, 10),
+			trade.Exchange.String(),
+			trade.Symbol,
+			trade.Price.String(),
+			trade.Quantity.String(),
+			trade.QuoteQuantity.String(),
+			trade.Side.String(),
+			strconv.FormatBool(trade.IsBuyer),
+			strconv.FormatBool(trade.IsMaker),
+			trade.Fee.String(),
+			trade.FeeCurrency,
+			trade.Time.Time().Format(time.RFC1123),
+		},
+	}
 }
 
 func (trade Trade) PositionChange() fixedpoint.Value {
@@ -117,7 +146,7 @@ func trimTrailingZero(a float64) string {
 
 // String is for console output
 func (trade Trade) String() string {
-	return fmt.Sprintf("TRADE %s %s %4s %s @ %s amount %s fee %s %s orderID %d %s",
+	return fmt.Sprintf("TRADE %s %s %4s %-4s @ %-6s | AMOUNT %s | FEE %s %s | OrderID %d | TID %d | %s",
 		trade.Exchange.String(),
 		trade.Symbol,
 		trade.Side,
@@ -127,6 +156,7 @@ func (trade Trade) String() string {
 		trade.Fee.String(),
 		trade.FeeCurrency,
 		trade.OrderID,
+		trade.ID,
 		trade.Time.Time().Format(time.StampMilli),
 	)
 }
@@ -146,25 +176,6 @@ func (trade Trade) PlainText() string {
 
 var slackTradeTextTemplate = ":handshake: Trade {{ .Symbol }} {{ .Side }} {{ .Quantity }} @ {{ .Price  }}"
 
-func exchangeFooterIcon(exName ExchangeName) string {
-	footerIcon := ""
-
-	switch exName {
-	case ExchangeBinance:
-		footerIcon = "https://bin.bnbstatic.com/static/images/common/favicon.ico"
-	case ExchangeMax:
-		footerIcon = "https://max.maicoin.com/favicon-16x16.png"
-	case ExchangeFTX:
-		footerIcon = "https://ftx.com/favicon.ico?v=2"
-	case ExchangeOKEx:
-		footerIcon = "https://static.okex.com/cdn/assets/imgs/MjAxODg/D91A7323087D31A588E0D2A379DD7747.png"
-	case ExchangeKucoin:
-		footerIcon = "https://assets.staticimg.com/cms/media/7AV75b9jzr9S8H3eNuOuoqj8PwdUjaDQGKGczGqTS.png"
-	}
-
-	return footerIcon
-}
-
 func (trade Trade) SlackAttachment() slack.Attachment {
 	var color = "#DC143C"
 
@@ -174,7 +185,7 @@ func (trade Trade) SlackAttachment() slack.Attachment {
 
 	liquidity := trade.Liquidity()
 	text := util.Render(slackTradeTextTemplate, trade)
-	footerIcon := exchangeFooterIcon(trade.Exchange)
+	footerIcon := ExchangeFooterIcon(trade.Exchange)
 
 	return slack.Attachment{
 		Text: text,
@@ -218,4 +229,8 @@ type TradeKey struct {
 	Exchange ExchangeName
 	ID       uint64
 	Side     SideType
+}
+
+func (k TradeKey) String() string {
+	return k.Exchange.String() + strconv.FormatUint(k.ID, 10) + k.Side.String()
 }
