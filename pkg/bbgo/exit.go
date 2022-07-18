@@ -20,12 +20,19 @@ func (s *ExitMethodSet) SetAndSubscribe(session *ExchangeSession, parent interfa
 	}
 }
 
+func (s *ExitMethodSet) Bind(session *ExchangeSession, orderExecutor *GeneralOrderExecutor) {
+	for _, method := range *s {
+		method.Bind(session, orderExecutor)
+	}
+}
+
 type ExitMethod struct {
 	RoiStopLoss               *RoiStopLoss               `json:"roiStopLoss"`
 	ProtectiveStopLoss        *ProtectiveStopLoss        `json:"protectiveStopLoss"`
 	RoiTakeProfit             *RoiTakeProfit             `json:"roiTakeProfit"`
 	LowerShadowTakeProfit     *LowerShadowTakeProfit     `json:"lowerShadowTakeProfit"`
 	CumulatedVolumeTakeProfit *CumulatedVolumeTakeProfit `json:"cumulatedVolumeTakeProfit"`
+	TrailingStop              *TrailingStop2             `json:"trailingStop"`
 }
 
 // Inherit is used for inheriting properties from the given strategy struct
@@ -73,5 +80,9 @@ func (m *ExitMethod) Bind(session *ExchangeSession, orderExecutor *GeneralOrderE
 
 	if m.CumulatedVolumeTakeProfit != nil {
 		m.CumulatedVolumeTakeProfit.Bind(session, orderExecutor)
+	}
+
+	if m.TrailingStop != nil {
+		m.TrailingStop.Bind(session, orderExecutor)
 	}
 }

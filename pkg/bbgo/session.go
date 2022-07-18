@@ -43,7 +43,7 @@ type StandardIndicatorSet struct {
 	ewma       map[types.IntervalWindow]*indicator.EWMA
 	boll       map[types.IntervalWindowBandWidth]*indicator.BOLL
 	stoch      map[types.IntervalWindow]*indicator.STOCH
-	volatility map[types.IntervalWindow]*indicator.VOLATILITY
+	volatility map[types.IntervalWindow]*indicator.Volatility
 
 	store *MarketDataStore
 }
@@ -55,7 +55,7 @@ func NewStandardIndicatorSet(symbol string, store *MarketDataStore) *StandardInd
 		ewma:       make(map[types.IntervalWindow]*indicator.EWMA),
 		boll:       make(map[types.IntervalWindowBandWidth]*indicator.BOLL),
 		stoch:      make(map[types.IntervalWindow]*indicator.STOCH),
-		volatility: make(map[types.IntervalWindow]*indicator.VOLATILITY),
+		volatility: make(map[types.IntervalWindow]*indicator.Volatility),
 		store:      store,
 	}
 
@@ -146,10 +146,10 @@ func (set *StandardIndicatorSet) STOCH(iw types.IntervalWindow) *indicator.STOCH
 }
 
 // VOLATILITY returns the volatility(stddev) indicator of the given interval and the window size.
-func (set *StandardIndicatorSet) VOLATILITY(iw types.IntervalWindow) *indicator.VOLATILITY {
+func (set *StandardIndicatorSet) VOLATILITY(iw types.IntervalWindow) *indicator.Volatility {
 	inc, ok := set.volatility[iw]
 	if !ok {
-		inc = &indicator.VOLATILITY{IntervalWindow: iw}
+		inc = &indicator.Volatility{IntervalWindow: iw}
 		inc.Bind(set.store)
 		set.volatility[iw] = inc
 	}
@@ -160,10 +160,6 @@ func (set *StandardIndicatorSet) VOLATILITY(iw types.IntervalWindow) *indicator.
 // ExchangeSession presents the exchange connection Session
 // It also maintains and collects the data returned from the stream.
 type ExchangeSession struct {
-	// exchange Session based notification system
-	// we make it as a value field so that we can configure it separately
-	Notifiability `json:"-" yaml:"-"`
-
 	// ---------------------------
 	// Session config fields
 	// ---------------------------
@@ -253,12 +249,6 @@ func NewExchangeSession(name string, exchange types.Exchange) *ExchangeSession {
 	marketDataStream.SetPublicOnly()
 
 	session := &ExchangeSession{
-		Notifiability: Notifiability{
-			SymbolChannelRouter:  NewPatternChannelRouter(nil),
-			SessionChannelRouter: NewPatternChannelRouter(nil),
-			ObjectChannelRouter:  NewObjectChannelRouter(),
-		},
-
 		Name:             name,
 		Exchange:         exchange,
 		UserDataStream:   userDataStream,
@@ -282,8 +272,7 @@ func NewExchangeSession(name string, exchange types.Exchange) *ExchangeSession {
 
 	session.OrderExecutor = &ExchangeOrderExecutor{
 		// copy the notification system so that we can route
-		Notifiability: session.Notifiability,
-		Session:       session,
+		Session: session,
 	}
 
 	return session
@@ -805,11 +794,6 @@ func (session *ExchangeSession) InitExchange(name string, ex types.Exchange) err
 	}
 
 	session.Name = name
-	session.Notifiability = Notifiability{
-		SymbolChannelRouter:  NewPatternChannelRouter(nil),
-		SessionChannelRouter: NewPatternChannelRouter(nil),
-		ObjectChannelRouter:  NewObjectChannelRouter(),
-	}
 	session.Exchange = ex
 	session.UserDataStream = ex.NewStream()
 	session.MarketDataStream = ex.NewStream()
@@ -830,8 +814,7 @@ func (session *ExchangeSession) InitExchange(name string, ex types.Exchange) err
 	session.orderStores = make(map[string]*OrderStore)
 	session.OrderExecutor = &ExchangeOrderExecutor{
 		// copy the notification system so that we can route
-		Notifiability: session.Notifiability,
-		Session:       session,
+		Session: session,
 	}
 
 	session.usedSymbols = make(map[string]struct{})

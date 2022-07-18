@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/cheggaaa/pb/v3"
 	"sort"
 
-	"github.com/evanphx/json-patch/v5"
+	"github.com/cheggaaa/pb/v3"
+
+	jsonpatch "github.com/evanphx/json-patch/v5"
 
 	"github.com/c9s/bbgo/pkg/backtest"
 	"github.com/c9s/bbgo/pkg/fixedpoint"
@@ -19,10 +20,28 @@ var TotalProfitMetricValueFunc = func(summaryReport *backtest.SummaryReport) fix
 	return summaryReport.TotalProfit
 }
 
+var TotalVolume = func(summaryReport *backtest.SummaryReport) fixedpoint.Value {
+	if len(summaryReport.SymbolReports) == 0 {
+		return fixedpoint.Zero
+	}
+
+	buyVolume := summaryReport.SymbolReports[0].PnL.BuyVolume
+	sellVolume := summaryReport.SymbolReports[0].PnL.SellVolume
+	return buyVolume.Add(sellVolume)
+}
+
 type Metric struct {
-	Labels []string         `json:"labels,omitempty"`
-	Params []interface{}    `json:"params,omitempty"`
-	Value  fixedpoint.Value `json:"value,omitempty"`
+	// Labels is the labels of the given parameters
+	Labels []string `json:"labels,omitempty"`
+
+	// Params is the parameters used to output the metrics result
+	Params []interface{} `json:"params,omitempty"`
+
+	// Key is the metric name
+	Key string `json:"key"`
+
+	// Value is the metric value of the metric
+	Value fixedpoint.Value `json:"value,omitempty"`
 }
 
 func copyParams(params []interface{}) []interface{} {
@@ -168,6 +187,7 @@ func (o *GridOptimizer) Run(executor Executor, configJson []byte) (map[string][]
 
 	var valueFunctions = map[string]MetricValueFunc{
 		"totalProfit": TotalProfitMetricValueFunc,
+		"totalVolume": TotalVolume,
 	}
 	var metrics = map[string][]Metric{}
 
@@ -175,6 +195,10 @@ func (o *GridOptimizer) Run(executor Executor, configJson []byte) (map[string][]
 
 	var taskC = make(chan BacktestTask, 10000)
 
+	var bar = pb.Full.New(cap(taskC))
+	bar.SetTemplateString(`{{ string . "log" | green}} | {{counters . }} {{bar . }} {{percent . }} {{etime . }} {{rtime . "ETA %s"}}`)
+
+	var taskCnt int64 = 0
 	var app = func(configJson []byte, next func(configJson []byte) error) error {
 		var labels = copyLabels(o.ParamLabels)
 		var params = copyParams(o.CurrentParams)
@@ -183,6 +207,8 @@ func (o *GridOptimizer) Run(executor Executor, configJson []byte) (map[string][]
 			Params:     params,
 			Labels:     labels,
 		}
+		taskCnt++
+		bar.SetTotal(taskCnt)
 		return nil
 	}
 
@@ -201,28 +227,33 @@ func (o *GridOptimizer) Run(executor Executor, configJson []byte) (map[string][]
 	}
 
 	ctx := context.Background()
-	if err := wrapper(configJson); err != nil {
-		return nil, err
-	}
-
-	bar := pb.Full.Start(len(taskC))
-	bar.SetTemplateString(`{{ string . "log" | green}} | {{counters . }} {{bar . }} {{percent . }} {{etime . }} {{rtime . "ETA %s"}}`)
+	var taskGenErr error
+	go func() {
+		taskGenErr = wrapper(configJson)
+		close(taskC) // this will shut down the executor
+	}()
 
 	resultsC, err := executor.Run(ctx, taskC, bar)
 	if err != nil {
 		return nil, err
 	}
 
-	close(taskC) // this will shut down the executor
-
 	for result := range resultsC {
-		for metricName, metricFunc := range valueFunctions {
+		bar.Increment()
+
+		if result.Report == nil {
+			log.Errorf("no summaryReport found for params: %+v", result.Params)
+			continue
+		}
+
+		for metricKey, metricFunc := range valueFunctions {
 			var metricValue = metricFunc(result.Report)
-			bar.Set("log", fmt.Sprintf("params: %+v => %s %+v", result.Params, metricName, metricValue))
-			bar.Increment()
-			metrics[metricName] = append(metrics[metricName], Metric{
+			bar.Set("log", fmt.Sprintf("params: %+v => %s %+v", result.Params, metricKey, metricValue))
+
+			metrics[metricKey] = append(metrics[metricKey], Metric{
 				Params: result.Params,
 				Labels: result.Labels,
+				Key:    metricKey,
 				Value:  metricValue,
 			})
 		}
@@ -237,7 +268,11 @@ func (o *GridOptimizer) Run(executor Executor, configJson []byte) (map[string][]
 		})
 	}
 
-	return metrics, err
+	if taskGenErr != nil {
+		return metrics, taskGenErr
+	} else {
+		return metrics, err
+	}
 }
 
 func reformatJson(text string) string {

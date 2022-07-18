@@ -99,7 +99,6 @@ func (m *SimplePriceMatching) CancelOrder(o types.Order) (types.Order, error) {
 		}
 		m.askOrders = orders
 		m.mu.Unlock()
-
 	}
 
 	if !found {
@@ -140,6 +139,11 @@ func (m *SimplePriceMatching) PlaceOrder(o types.SubmitOrder) (*types.Order, *ty
 	switch o.Type {
 	case types.OrderTypeMarket:
 		price = m.LastPrice
+
+	case types.OrderTypeStopMarket:
+		// the actual price might be different.
+		price = o.StopPrice
+
 	case types.OrderTypeLimit, types.OrderTypeStopLimit, types.OrderTypeLimitMaker:
 		price = o.Price
 	}
@@ -190,6 +194,8 @@ func (m *SimplePriceMatching) PlaceOrder(o types.SubmitOrder) (*types.Order, *ty
 		order2.Status = types.OrderStatusFilled
 		order2.ExecutedQuantity = order2.Quantity
 		order2.IsWorking = false
+
+		m.EmitOrderUpdate(order2)
 
 		// let the exchange emit the "FILLED" order update (we need the closed order)
 		// m.EmitOrderUpdate(order2)
@@ -570,6 +576,7 @@ func (m *SimplePriceMatching) getOrder(orderID uint64) (types.Order, bool) {
 
 func (m *SimplePriceMatching) processKLine(kline types.KLine) {
 	m.CurrentTime = kline.EndTime.Time()
+
 	if m.LastPrice.IsZero() {
 		m.LastPrice = kline.Open
 	} else {

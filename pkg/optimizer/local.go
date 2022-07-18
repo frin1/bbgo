@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/cheggaaa/pb/v3"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/cheggaaa/pb/v3"
 
 	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
@@ -75,6 +76,20 @@ func (e *LocalProcessExecutor) readReport(output []byte) (*backtest.SummaryRepor
 	return summaryReport, nil
 }
 
+// Prepare prepares the environment for the following back tests
+// this is a blocking operation
+func (e *LocalProcessExecutor) Prepare(configJson []byte) error {
+	log.Debugln("Sync database before launching backtests...")
+	tf, err := jsonToYamlConfig(e.ConfigDir, configJson)
+	if err != nil {
+		return err
+	}
+
+	c := exec.Command(e.Bin, "backtest", "--sync", "--sync-only", "--config", tf.Name())
+	_, err = c.Output()
+	return err
+}
+
 func (e *LocalProcessExecutor) Run(ctx context.Context, taskC chan BacktestTask, bar *pb.ProgressBar) (chan BacktestTask, error) {
 	var maxNumOfProcess = e.Config.MaxNumberOfProcesses
 	var resultsC = make(chan BacktestTask, maxNumOfProcess*2)
@@ -110,7 +125,11 @@ func (e *LocalProcessExecutor) Run(ctx context.Context, taskC chan BacktestTask,
 
 					report, err := e.execute(task.ConfigJson)
 					if err != nil {
-						log.WithError(err).Errorf("execute error")
+						if err2, ok := err.(*exec.ExitError); ok {
+							log.WithError(err).Errorf("execute error: %s", err2.Stderr)
+						} else {
+							log.WithError(err).Errorf("execute error")
+						}
 					}
 
 					task.Error = err

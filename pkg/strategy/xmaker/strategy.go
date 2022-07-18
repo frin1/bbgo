@@ -305,8 +305,8 @@ func (s *Strategy) updateQuote(ctx context.Context, orderExecutionRouter bbgo.Or
 	var pips = s.Pips
 
 	if s.EnableBollBandMargin {
-		lastDownBand := fixedpoint.NewFromFloat(s.boll.LastDownBand())
-		lastUpBand := fixedpoint.NewFromFloat(s.boll.LastUpBand())
+		lastDownBand := fixedpoint.NewFromFloat(s.boll.DownBand.Last())
+		lastUpBand := fixedpoint.NewFromFloat(s.boll.UpBand.Last())
 
 		if lastUpBand.IsZero() || lastDownBand.IsZero() {
 			log.Warnf("bollinger band value is zero, skipping")
@@ -693,7 +693,9 @@ func (s *Strategy) CrossRun(ctx context.Context, orderExecutionRouter bbgo.Order
 
 	if store, ok := s.sourceSession.MarketDataStore(s.Symbol); ok {
 		if klines, ok2 := store.KLinesOfInterval(s.BollBandInterval); ok2 {
-			s.boll.Update(*klines)
+			for i := 0; i < len(*klines); i++ {
+				s.boll.CalculateAndUpdate((*klines)[0 : i+1])
+			}
 		}
 	}
 
