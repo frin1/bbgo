@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sync"
 
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
@@ -14,6 +15,12 @@ import (
 	"github.com/c9s/bbgo/pkg/interact"
 )
 
+// Strategy method calls:
+// -> Defaults()   (optional method)
+// -> Initialize()   (optional method)
+// -> Validate()     (optional method)
+// -> Run()          (optional method)
+// -> Shutdown(shutdownCtx context.Context, wg *sync.WaitGroup)
 type StrategyID interface {
 	ID() string
 }
@@ -24,8 +31,21 @@ type SingleExchangeStrategy interface {
 	Run(ctx context.Context, orderExecutor OrderExecutor, session *ExchangeSession) error
 }
 
+// StrategyInitializer's Initialize method is called before the Subscribe method call.
 type StrategyInitializer interface {
 	Initialize() error
+}
+
+type StrategyDefaulter interface {
+	Defaults() error
+}
+
+type StrategyValidator interface {
+	Validate() error
+}
+
+type StrategyShutdown interface {
+	Shutdown(ctx context.Context, wg *sync.WaitGroup)
 }
 
 // ExchangeSessionSubscriber provides an interface for collecting subscriptions from different strategies
@@ -41,10 +61,6 @@ type CrossExchangeSessionSubscriber interface {
 type CrossExchangeStrategy interface {
 	StrategyID
 	CrossRun(ctx context.Context, orderExecutionRouter OrderExecutionRouter, sessions map[string]*ExchangeSession) error
-}
-
-type Validator interface {
-	Validate() error
 }
 
 type Logging interface {
@@ -153,6 +169,12 @@ func (trader *Trader) Subscribe() {
 	for sessionName, strategies := range trader.exchangeStrategies {
 		session := trader.environment.sessions[sessionName]
 		for _, strategy := range strategies {
+			if defaulter, ok := strategy.(StrategyDefaulter); ok {
+				if err := defaulter.Defaults(); err != nil {
+					panic(err)
+				}
+			}
+
 			if initializer, ok := strategy.(StrategyInitializer); ok {
 				if err := initializer.Initialize(); err != nil {
 					panic(err)
@@ -168,6 +190,12 @@ func (trader *Trader) Subscribe() {
 	}
 
 	for _, strategy := range trader.crossExchangeStrategies {
+		if defaulter, ok := strategy.(StrategyDefaulter); ok {
+			if err := defaulter.Defaults(); err != nil {
+				panic(err)
+			}
+		}
+
 		if initializer, ok := strategy.(StrategyInitializer); ok {
 			if err := initializer.Initialize(); err != nil {
 				panic(err)
@@ -183,57 +211,15 @@ func (trader *Trader) Subscribe() {
 }
 
 func (trader *Trader) RunSingleExchangeStrategy(ctx context.Context, strategy SingleExchangeStrategy, session *ExchangeSession, orderExecutor OrderExecutor) error {
-	rs := reflect.ValueOf(strategy)
-
-	// get the struct element
-	rs = rs.Elem()
-
-	if rs.Kind() != reflect.Struct {
-		return errors.New("strategy object is not a struct")
-	}
-
-	if err := trader.injectCommonServices(strategy); err != nil {
-		return err
-	}
-
-	if err := dynamic.InjectField(rs, "OrderExecutor", orderExecutor, false); err != nil {
-		return errors.Wrapf(err, "failed to inject OrderExecutor on %T", strategy)
-	}
-
-	if symbol, ok := dynamic.LookupSymbolField(rs); ok {
-		log.Infof("found symbol based strategy from %s", rs.Type())
-
-		market, ok := session.Market(symbol)
-		if !ok {
-			return fmt.Errorf("market of symbol %s not found", symbol)
-		}
-
-		indicatorSet, ok := session.StandardIndicatorSet(symbol)
-		if !ok {
-			return fmt.Errorf("standardIndicatorSet of symbol %s not found", symbol)
-		}
-
-		store, ok := session.MarketDataStore(symbol)
-		if !ok {
-			return fmt.Errorf("marketDataStore of symbol %s not found", symbol)
-		}
-
-		if err := dynamic.ParseStructAndInject(strategy,
-			market,
-			indicatorSet,
-			store,
-			session,
-			session.OrderExecutor,
-		); err != nil {
-			return errors.Wrapf(err, "failed to inject object into %T", strategy)
-		}
-	}
-
-	// If the strategy has Validate() method, run it and check the error
-	if v, ok := strategy.(Validator); ok {
+	if v, ok := strategy.(StrategyValidator); ok {
 		if err := v.Validate(); err != nil {
 			return fmt.Errorf("failed to validate the config: %w", err)
 		}
+	}
+
+	if shutdown, ok := strategy.(StrategyShutdown); ok {
+		// Register the shutdown callback
+		OnShutdown(shutdown.Shutdown)
 	}
 
 	return strategy.Run(ctx, orderExecutor, session)
@@ -275,11 +261,86 @@ func (trader *Trader) RunAllSingleExchangeStrategy(ctx context.Context) error {
 	return nil
 }
 
+func (trader *Trader) injectFields() error {
+	// load and run Session strategies
+	for sessionName, strategies := range trader.exchangeStrategies {
+		var session = trader.environment.sessions[sessionName]
+		var orderExecutor = trader.getSessionOrderExecutor(sessionName)
+		for _, strategy := range strategies {
+			rs := reflect.ValueOf(strategy)
+
+			// get the struct element
+			rs = rs.Elem()
+
+			if rs.Kind() != reflect.Struct {
+				return errors.New("strategy object is not a struct")
+			}
+
+			if err := trader.injectCommonServices(strategy); err != nil {
+				return err
+			}
+
+			if err := dynamic.InjectField(rs, "OrderExecutor", orderExecutor, false); err != nil {
+				return errors.Wrapf(err, "failed to inject OrderExecutor on %T", strategy)
+			}
+
+			if symbol, ok := dynamic.LookupSymbolField(rs); ok {
+				log.Infof("found symbol based strategy from %s", rs.Type())
+
+				market, ok := session.Market(symbol)
+				if !ok {
+					return fmt.Errorf("market of symbol %s not found", symbol)
+				}
+
+				indicatorSet := session.StandardIndicatorSet(symbol)
+				if !ok {
+					return fmt.Errorf("standardIndicatorSet of symbol %s not found", symbol)
+				}
+
+				store, ok := session.MarketDataStore(symbol)
+				if !ok {
+					return fmt.Errorf("marketDataStore of symbol %s not found", symbol)
+				}
+
+				if err := dynamic.ParseStructAndInject(strategy,
+					market,
+					session,
+					session.OrderExecutor,
+					indicatorSet,
+					store,
+				); err != nil {
+					return errors.Wrapf(err, "failed to inject object into %T", strategy)
+				}
+			}
+		}
+	}
+
+	for _, strategy := range trader.crossExchangeStrategies {
+		rs := reflect.ValueOf(strategy)
+
+		// get the struct element from the struct pointer
+		rs = rs.Elem()
+		if rs.Kind() != reflect.Struct {
+			continue
+		}
+
+		if err := trader.injectCommonServices(strategy); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (trader *Trader) Run(ctx context.Context) error {
 	// before we start the interaction,
 	// register the core interaction, because we can only get the strategies in this scope
 	// trader.environment.Connect will call interact.Start
 	interact.AddCustomInteraction(NewCoreInteraction(trader.environment, trader))
+
+	if err := trader.injectFields(); err != nil {
+		return err
+	}
 
 	trader.Subscribe()
 
@@ -301,18 +362,6 @@ func (trader *Trader) Run(ctx context.Context) error {
 	}
 
 	for _, strategy := range trader.crossExchangeStrategies {
-		rs := reflect.ValueOf(strategy)
-
-		// get the struct element from the struct pointer
-		rs = rs.Elem()
-		if rs.Kind() != reflect.Struct {
-			continue
-		}
-
-		if err := trader.injectCommonServices(strategy); err != nil {
-			return err
-		}
-
 		if err := strategy.CrossRun(ctx, router, trader.environment.sessions); err != nil {
 			return err
 		}

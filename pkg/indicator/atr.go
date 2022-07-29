@@ -22,6 +22,24 @@ type ATR struct {
 
 var _ types.SeriesExtend = &ATR{}
 
+func (inc *ATR) Clone() *ATR {
+	out := &ATR{
+		IntervalWindow:       inc.IntervalWindow,
+		PercentageVolatility: inc.PercentageVolatility[:],
+		PreviousClose:        inc.PreviousClose,
+		RMA:                  inc.RMA.Clone().(*RMA),
+		EndTime:              inc.EndTime,
+	}
+	out.SeriesBase.Series = out
+	return out
+}
+
+func (inc *ATR) TestUpdate(high, low, cloze float64) *ATR {
+	c := inc.Clone()
+	c.Update(high, low, cloze)
+	return c
+}
+
 func (inc *ATR) Update(high, low, cloze float64) {
 	if inc.Window <= 0 {
 		panic("window must be greater than 0")
@@ -79,29 +97,11 @@ func (inc *ATR) Length() int {
 }
 
 func (inc *ATR) PushK(k types.KLine) {
-	inc.Update(k.High.Float64(), k.Low.Float64(), k.Close.Float64())
-}
-
-func (inc *ATR) CalculateAndUpdate(kLines []types.KLine) {
-	for _, k := range kLines {
-		if inc.EndTime != zeroTime && !k.EndTime.After(inc.EndTime) {
-			continue
-		}
-		inc.PushK(k)
-	}
-
-	inc.EmitUpdate(inc.Last())
-	inc.EndTime = kLines[len(kLines)-1].EndTime.Time()
-}
-
-func (inc *ATR) handleKLineWindowUpdate(interval types.Interval, window types.KLineWindow) {
-	if inc.Interval != interval {
+	if inc.EndTime != zeroTime && !k.EndTime.After(inc.EndTime) {
 		return
 	}
 
-	inc.CalculateAndUpdate(window)
-}
-
-func (inc *ATR) Bind(updater KLineWindowUpdater) {
-	updater.OnKLineWindowUpdate(inc.handleKLineWindowUpdate)
+	inc.Update(k.High.Float64(), k.Low.Float64(), k.Close.Float64())
+	inc.EndTime = k.EndTime.Time()
+	inc.EmitUpdate(inc.Last())
 }

@@ -4,8 +4,8 @@ sessions:
     exchange: binance
     envVarPrefix: binance
     margin: true
-    # isolatedMargin: true
-    # isolatedMarginSymbol: ETHUSDT
+    isolatedMargin: true
+    isolatedMarginSymbol: ETHUSDT
 
 exchangeStrategies:
 - on: binance
@@ -17,6 +17,11 @@ exchangeStrategies:
 
     # window is the main pivot window
     window: 200
+
+    quantity: 10.0
+
+    # when quantity is not given, leverage will be used.
+    # leverage: 10.0
 
     # breakLow settings are used for shorting when the current price break the previous low
     breakLow:
@@ -37,13 +42,17 @@ exchangeStrategies:
       # Notice: When marketOrder is set, bounceRatio will not be used.
       # bounceRatio: 0.1%
 
-      # stopEMARange is the price range we allow short.
+      # stopEMA is the price range we allow short.
       # Short-allowed price range = [current price] > [EMA] * (1 - [stopEMARange])
       # Higher the stopEMARange than higher the chance to open a short
-      stopEMARange: 2%
       stopEMA:
         interval: 1h
         window: 99
+        range: 2%
+
+      trendEMA:
+        interval: 1d
+        window: 7
 
     resistanceShort:
       enabled: true

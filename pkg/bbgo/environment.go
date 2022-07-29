@@ -453,6 +453,10 @@ func (environ *Environment) SetStartTime(t time.Time) *Environment {
 	return environ
 }
 
+func (environ *Environment) StartTime() time.Time {
+	return environ.startTime
+}
+
 // SetSyncStartTime overrides the default trade scan time (-7 days)
 func (environ *Environment) SetSyncStartTime(t time.Time) *Environment {
 	environ.syncStartTime = t
@@ -926,7 +930,7 @@ func (environ *Environment) setupSlack(userConfig *Config, slackToken string, pe
 
 	// app-level token (for specific api)
 	slackAppToken := viper.GetString("slack-app-token")
-	if !strings.HasPrefix(slackAppToken, "xapp-") {
+	if len(slackAppToken) > 0 && !strings.HasPrefix(slackAppToken, "xapp-") {
 		log.Errorf("SLACK_APP_TOKEN must have the prefix \"xapp-\".")
 		return
 	}
@@ -940,7 +944,10 @@ func (environ *Environment) setupSlack(userConfig *Config, slackToken string, pe
 
 	var slackOpts = []slack.Option{
 		slack.OptionLog(stdlog.New(os.Stdout, "api: ", stdlog.Lshortfile|stdlog.LstdFlags)),
-		slack.OptionAppLevelToken(slackAppToken),
+	}
+
+	if len(slackAppToken) > 0 {
+		slackOpts = append(slackOpts, slack.OptionAppLevelToken(slackAppToken))
 	}
 
 	if b, ok := util.GetEnvVarBool("DEBUG_SLACK"); ok {

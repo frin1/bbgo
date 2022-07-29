@@ -49,11 +49,6 @@ func init() {
 	_ = types.Exchange(&Exchange{})
 	_ = types.MarginExchange(&Exchange{})
 	_ = types.FuturesExchange(&Exchange{})
-
-	// FIXME: this is not effected since dotenv is loaded in the rootCmd, not in the init function
-	if ok, _ := strconv.ParseBool(os.Getenv("DEBUG_BINANCE_STREAM")); ok {
-		log.Level = logrus.DebugLevel
-	}
 }
 
 func isBinanceUs() bool {
@@ -82,7 +77,7 @@ type Exchange struct {
 	client2 *binanceapi.RestClient
 }
 
-var timeSetter sync.Once
+var timeSetterOnce sync.Once
 
 func New(key, secret string) *Exchange {
 	var client = binance.NewClient(key, secret)
@@ -104,30 +99,51 @@ func New(key, secret string) *Exchange {
 
 	client2 := binanceapi.NewClient(client.BaseURL)
 
-	var err error
-	if len(key) > 0 && len(secret) > 0 {
-		client2.Auth(key, secret)
-
-		timeSetter.Do(func() {
-			_, err = client.NewSetServerTimeService().Do(context.Background())
-			if err != nil {
-				log.WithError(err).Error("can not set server time")
-			}
-
-			_, err = futuresClient.NewSetServerTimeService().Do(context.Background())
-			if err != nil {
-				log.WithError(err).Error("can not set server time")
-			}
-		})
-	}
-
-	return &Exchange{
-		key: key,
-		// pragma: allowlist nextline secret
+	ex := &Exchange{
+		key:           key,
 		secret:        secret,
 		client:        client,
 		futuresClient: futuresClient,
 		client2:       client2,
+	}
+
+	if len(key) > 0 && len(secret) > 0 {
+		client2.Auth(key, secret)
+
+		ctx := context.Background()
+		go timeSetterOnce.Do(func() {
+			ex.setServerTimeOffset(ctx)
+
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+
+				case <-ticker.C:
+					ex.setServerTimeOffset(ctx)
+				}
+			}
+		})
+	}
+
+	return ex
+}
+
+func (e *Exchange) setServerTimeOffset(ctx context.Context) {
+	_, err := e.client.NewSetServerTimeService().Do(ctx)
+	if err != nil {
+		log.WithError(err).Error("can not set server time")
+	}
+
+	_, err = e.futuresClient.NewSetServerTimeService().Do(ctx)
+	if err != nil {
+		log.WithError(err).Error("can not set server time")
+	}
+
+	if err = e.client2.SetTimeOffsetFromServer(ctx); err != nil {
+		log.WithError(err).Error("can not set server time")
 	}
 }
 
@@ -1609,6 +1625,30 @@ func (e *Exchange) QueryPositionRisk(ctx context.Context, symbol string) (*types
 	}
 
 	return convertPositionRisk(risks[0])
+}
+
+var SupportedIntervals = map[types.Interval]int{
+	types.Interval1m:  1,
+	types.Interval5m:  5,
+	types.Interval15m: 15,
+	types.Interval30m: 30,
+	types.Interval1h:  60,
+	types.Interval2h:  60 * 2,
+	types.Interval4h:  60 * 4,
+	types.Interval6h:  60 * 6,
+	types.Interval12h: 60 * 12,
+	types.Interval1d:  60 * 24,
+	types.Interval3d:  60 * 24 * 3,
+	types.Interval1w:  60 * 24 * 7,
+}
+
+func (e *Exchange) SupportedInterval() map[types.Interval]int {
+	return SupportedIntervals
+}
+
+func (e *Exchange) IsSupportedInterval(interval types.Interval) bool {
+	_, ok := SupportedIntervals[interval]
+	return ok
 }
 
 func getLaunchDate() (time.Time, error) {

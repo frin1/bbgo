@@ -56,6 +56,8 @@ type Profit struct {
 	IsIsolated  bool             `json:"isIsolated" db:"is_isolated"`
 	TradedAt    time.Time        `json:"tradedAt" db:"traded_at"`
 
+	PositionOpenedAt time.Time `json:"positionOpenedAt" db:"-"`
+
 	// strategy related fields
 	Strategy           string `json:"strategy" db:"strategy"`
 	StrategyInstanceID string `json:"strategyInstanceID" db:"strategy_instance_id"`
@@ -237,9 +239,12 @@ func (s *ProfitStats) Init(market Market) {
 }
 
 func (s *ProfitStats) AddProfit(profit Profit) {
+	if s.IsOver24Hours() {
+		s.ResetToday()
+	}
+
 	s.AccumulatedPnL = s.AccumulatedPnL.Add(profit.Profit)
 	s.AccumulatedNetProfit = s.AccumulatedNetProfit.Add(profit.NetProfit)
-
 	s.TodayPnL = s.TodayPnL.Add(profit.Profit)
 	s.TodayNetProfit = s.TodayNetProfit.Add(profit.NetProfit)
 
@@ -260,8 +265,9 @@ func (s *ProfitStats) AddTrade(trade Trade) {
 	s.AccumulatedVolume = s.AccumulatedVolume.Add(trade.Quantity)
 }
 
+// IsOver24Hours checks if the since time is over 24 hours
 func (s *ProfitStats) IsOver24Hours() bool {
-	return time.Since(time.Unix(s.TodaySince, 0)) > 24*time.Hour
+	return time.Since(time.Unix(s.TodaySince, 0)) >= 24*time.Hour
 }
 
 func (s *ProfitStats) ResetToday() {
@@ -313,14 +319,6 @@ func (s *ProfitStats) SlackAttachment() slack.Attachment {
 		})
 	}
 
-	if !s.TodayGrossProfit.IsZero() {
-		fields = append(fields, slack.AttachmentField{
-			Title: "Profit Today",
-			Value: pnlSignString(s.TodayGrossProfit) + " " + s.QuoteCurrency,
-			Short: true,
-		})
-	}
-
 	if !s.TodayNetProfit.IsZero() {
 		fields = append(fields, slack.AttachmentField{
 			Title: "Net Profit Today",
@@ -329,9 +327,17 @@ func (s *ProfitStats) SlackAttachment() slack.Attachment {
 		})
 	}
 
+	if !s.TodayGrossProfit.IsZero() {
+		fields = append(fields, slack.AttachmentField{
+			Title: "Gross Profit Today",
+			Value: pnlSignString(s.TodayGrossProfit) + " " + s.QuoteCurrency,
+			Short: true,
+		})
+	}
+
 	if !s.TodayGrossLoss.IsZero() {
 		fields = append(fields, slack.AttachmentField{
-			Title: "Loss Today",
+			Title: "Gross Loss Today",
 			Value: pnlSignString(s.TodayGrossLoss) + " " + s.QuoteCurrency,
 			Short: true,
 		})
@@ -346,8 +352,15 @@ func (s *ProfitStats) SlackAttachment() slack.Attachment {
 
 	if !s.AccumulatedGrossProfit.IsZero() {
 		fields = append(fields, slack.AttachmentField{
-			Title: "Accumulated Profit",
+			Title: "Accumulated Gross Profit",
 			Value: pnlSignString(s.AccumulatedGrossProfit) + " " + s.QuoteCurrency,
+		})
+	}
+
+	if !s.AccumulatedGrossLoss.IsZero() {
+		fields = append(fields, slack.AttachmentField{
+			Title: "Accumulated Gross Loss",
+			Value: pnlSignString(s.AccumulatedGrossLoss) + " " + s.QuoteCurrency,
 		})
 	}
 
@@ -355,13 +368,6 @@ func (s *ProfitStats) SlackAttachment() slack.Attachment {
 		fields = append(fields, slack.AttachmentField{
 			Title: "Accumulated Net Profit",
 			Value: pnlSignString(s.AccumulatedNetProfit) + " " + s.QuoteCurrency,
-		})
-	}
-
-	if !s.AccumulatedGrossLoss.IsZero() {
-		fields = append(fields, slack.AttachmentField{
-			Title: "Accumulated Loss",
-			Value: pnlSignString(s.AccumulatedGrossLoss) + " " + s.QuoteCurrency,
 		})
 	}
 

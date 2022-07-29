@@ -60,36 +60,13 @@ func (inc *STOCH) LastD() float64 {
 }
 
 func (inc *STOCH) PushK(k types.KLine) {
+	if inc.EndTime != zeroTime && !k.EndTime.After(inc.EndTime) {
+		return
+	}
+
 	inc.Update(k.High.Float64(), k.Low.Float64(), k.Close.Float64())
-}
-
-func (inc *STOCH) CalculateAndUpdate(kLines []types.KLine) {
-	if len(kLines) < inc.Window || len(kLines) < DPeriod {
-		return
-	}
-
-	for _, k := range kLines {
-		if inc.EndTime != zeroTime && !k.EndTime.After(inc.EndTime) {
-			continue
-		}
-
-		inc.PushK(k)
-	}
-
+	inc.EndTime = k.EndTime.Time()
 	inc.EmitUpdate(inc.LastK(), inc.LastD())
-	inc.EndTime = kLines[len(kLines)-1].EndTime.Time()
-}
-
-func (inc *STOCH) handleKLineWindowUpdate(interval types.Interval, window types.KLineWindow) {
-	if inc.Interval != interval {
-		return
-	}
-
-	inc.CalculateAndUpdate(window)
-}
-
-func (inc *STOCH) Bind(updater KLineWindowUpdater) {
-	updater.OnKLineWindowUpdate(inc.handleKLineWindowUpdate)
 }
 
 func (inc *STOCH) GetD() types.Series {

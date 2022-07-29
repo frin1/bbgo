@@ -21,7 +21,6 @@ Bollinger Bands Technical indicator guide:
 
 //go:generate callbackgen -type BOLL
 type BOLL struct {
-	types.SeriesBase
 	types.IntervalWindow
 
 	// K is the multiplier of Std, generally it's 2
@@ -74,7 +73,6 @@ func (inc *BOLL) LastDownBand() float64 {
 
 func (inc *BOLL) Update(value float64) {
 	if inc.SMA == nil {
-		inc.SeriesBase.Series = inc
 		inc.SMA = &SMA{IntervalWindow: inc.IntervalWindow}
 	}
 
@@ -96,25 +94,35 @@ func (inc *BOLL) Update(value float64) {
 	inc.DownBand.Push(downBand)
 }
 
-func (inc *BOLL) PushK(k types.KLine) {
-	inc.Update(k.Close.Float64())
+func (inc *BOLL) BindK(target KLineClosedEmitter, symbol string, interval types.Interval) {
+	target.OnKLineClosed(types.KLineWith(symbol, interval, inc.PushK))
 }
 
-func (inc *BOLL) CalculateAndUpdate(allKLines []types.KLine) {
-	var last = allKLines[len(allKLines)-1]
+func (inc *BOLL) PushK(k types.KLine) {
+	if inc.EndTime != zeroTime && k.EndTime.Before(inc.EndTime) {
+		return
+	}
+	inc.Update(k.Close.Float64())
+	inc.EndTime = k.EndTime.Time()
+	inc.EmitUpdate(inc.SMA.Last(), inc.UpBand.Last(), inc.DownBand.Last())
+}
 
-	if inc.SMA == nil {
-		for _, k := range allKLines {
-			if inc.EndTime != zeroTime && k.EndTime.Before(inc.EndTime) {
-				continue
-			}
-			inc.PushK(k)
-		}
-	} else {
-		inc.PushK(last)
+func (inc *BOLL) LoadK(allKLines []types.KLine) {
+	for _, k := range allKLines {
+		inc.PushK(k)
 	}
 
 	inc.EmitUpdate(inc.SMA.Last(), inc.UpBand.Last(), inc.DownBand.Last())
+}
+
+func (inc *BOLL) CalculateAndUpdate(allKLines []types.KLine) {
+	if inc.SMA == nil {
+		inc.LoadK(allKLines)
+		return
+	}
+
+	var last = allKLines[len(allKLines)-1]
+	inc.PushK(last)
 }
 
 func (inc *BOLL) handleKLineWindowUpdate(interval types.Interval, window types.KLineWindow) {

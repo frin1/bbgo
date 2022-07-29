@@ -25,6 +25,20 @@ type RMA struct {
 	updateCallbacks []func(value float64)
 }
 
+func (inc *RMA) Clone() types.UpdatableSeriesExtend {
+	out := &RMA{
+		IntervalWindow: inc.IntervalWindow,
+		Values:         inc.Values[:],
+		counter:        inc.counter,
+		Adjust:         inc.Adjust,
+		tmp:            inc.tmp,
+		sum:            inc.sum,
+		EndTime:        inc.EndTime,
+	}
+	out.SeriesBase.Series = out
+	return out
+}
+
 func (inc *RMA) Update(x float64) {
 	lambda := 1 / float64(inc.Window)
 	if inc.counter == 0 {
@@ -69,6 +83,7 @@ var _ types.SeriesExtend = &RMA{}
 
 func (inc *RMA) PushK(k types.KLine) {
 	inc.Update(k.Close.Float64())
+	inc.EndTime = k.EndTime.Time()
 }
 
 func (inc *RMA) CalculateAndUpdate(kLines []types.KLine) {
@@ -87,7 +102,6 @@ func (inc *RMA) CalculateAndUpdate(kLines []types.KLine) {
 	}
 
 	inc.EmitUpdate(inc.Last())
-	inc.EndTime = last.EndTime.Time()
 }
 
 func (inc *RMA) handleKLineWindowUpdate(interval types.Interval, window types.KLineWindow) {

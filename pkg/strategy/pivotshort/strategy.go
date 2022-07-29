@@ -18,16 +18,11 @@ import (
 const ID = "pivotshort"
 
 var one = fixedpoint.One
-var zero = fixedpoint.Zero
 
 var log = logrus.WithField("strategy", ID)
 
 func init() {
 	bbgo.RegisterStrategy(ID, &Strategy{})
-}
-
-type IntervalWindowSetting struct {
-	types.IntervalWindow
 }
 
 type SupportTakeProfit struct {
@@ -36,7 +31,7 @@ type SupportTakeProfit struct {
 
 	Ratio fixedpoint.Value `json:"ratio"`
 
-	pivot               *indicator.Pivot
+	pivot               *indicator.PivotLow
 	orderExecutor       *bbgo.GeneralOrderExecutor
 	session             *bbgo.ExchangeSession
 	activeOrders        *bbgo.ActiveOrderBook
@@ -63,11 +58,8 @@ func (s *SupportTakeProfit) Bind(session *bbgo.ExchangeSession, orderExecutor *b
 	s.activeOrders.BindStream(session.UserDataStream)
 
 	position := orderExecutor.Position()
-	symbol := position.Symbol
-	store, _ := session.MarketDataStore(symbol)
-	s.pivot = &indicator.Pivot{IntervalWindow: s.IntervalWindow}
-	s.pivot.Bind(store)
-	preloadPivot(s.pivot, store)
+
+	s.pivot = session.StandardIndicatorSet(s.Symbol).PivotLow(s.IntervalWindow)
 
 	session.MarketDataStream.OnKLineClosed(types.KLineWith(s.Symbol, s.Interval, func(kline types.KLine) {
 		if !s.updateSupportPrice(kline.Close) {
@@ -89,7 +81,7 @@ func (s *SupportTakeProfit) Bind(session *bbgo.ExchangeSession, orderExecutor *b
 
 		bbgo.Notify("placing %s take profit order at price %f", s.Symbol, buyPrice.Float64())
 		createdOrders, err := orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
-			Symbol:   symbol,
+			Symbol:   s.Symbol,
 			Type:     types.OrderTypeLimitMaker,
 			Side:     types.SideTypeBuy,
 			Price:    buyPrice,
@@ -106,11 +98,11 @@ func (s *SupportTakeProfit) Bind(session *bbgo.ExchangeSession, orderExecutor *b
 }
 
 func (s *SupportTakeProfit) updateSupportPrice(closePrice fixedpoint.Value) bool {
-	log.Infof("[supportTakeProfit] lows: %v", s.pivot.Lows)
+	log.Infof("[supportTakeProfit] lows: %v", s.pivot.Values)
 
 	groupDistance := 0.01
 	minDistance := 0.05
-	supportPrices := findPossibleSupportPrices(closePrice.Float64()*(1.0-minDistance), groupDistance, s.pivot.Lows)
+	supportPrices := findPossibleSupportPrices(closePrice.Float64()*(1.0-minDistance), groupDistance, s.pivot.Values)
 	if len(supportPrices) == 0 {
 		return false
 	}
@@ -185,6 +177,10 @@ func (s *Strategy) ID() string {
 	return ID
 }
 
+func (s *Strategy) InstanceID() string {
+	return fmt.Sprintf("%s:%s", ID, s.Symbol)
+}
+
 func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
 	session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.Interval})
 	session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: types.Interval1m})
@@ -210,10 +206,6 @@ func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
 	}
 
 	s.ExitMethods.SetAndSubscribe(session, s)
-}
-
-func (s *Strategy) InstanceID() string {
-	return fmt.Sprintf("%s:%s", ID, s.Symbol)
 }
 
 func (s *Strategy) CurrentPosition() *types.Position {
@@ -292,22 +284,4 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 	})
 
 	return nil
-}
-
-func preloadPivot(pivot *indicator.Pivot, store *bbgo.MarketDataStore) *types.KLine {
-	klines, ok := store.KLinesOfInterval(pivot.Interval)
-	if !ok {
-		return nil
-	}
-
-	last := (*klines)[len(*klines)-1]
-	log.Debugf("updating pivot indicator: %d klines", len(*klines))
-
-	for i := pivot.Window; i < len(*klines); i++ {
-		pivot.CalculateAndUpdate((*klines)[0 : i+1])
-	}
-
-	log.Debugf("found %v previous lows: %v", pivot.IntervalWindow, pivot.Lows)
-	log.Debugf("found %v previous highs: %v", pivot.IntervalWindow, pivot.Highs)
-	return &last
 }

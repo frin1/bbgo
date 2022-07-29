@@ -1,29 +1,23 @@
 ---
-riskControls:
-  # This is the session-based risk controller, which let you configure different risk controller by session.
-  sessionBased:
-    # "max" is the session name that you want to configure the risk control
-    max:
-      # orderExecutor is one of the risk control
-      orderExecutor:
-        # symbol-routed order executor
-        bySymbol:
-          USDTTWD:
-            # basic risk control order executor
-            basic:
-              minQuoteBalance: 100.0
-              maxBaseAssetBalance: 30_000.0
-              minBaseAssetBalance: 0.0
-              maxOrderAmount: 1_000.0
+backtest:
+  sessions:
+  - binance
+  startTime: "2022-01-01"
+  endTime: "2022-06-18"
+  symbols:
+  - ETHUSDT
+  accounts:
+    binance:
+      balances:
+        USDT: 20_000.0
 
 exchangeStrategies:
-
-- on: max
+- on: binance
   schedule:
-    interval: 1m
-    symbol: USDTTWD
+    interval: 1h
+    symbol: ETHUSDT
     side: buy
-    quantity: 10
+    amount: 20
 
     aboveMovingAverage:
       type: EWMA
