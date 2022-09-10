@@ -36,7 +36,7 @@
 
 /pkg/server/assets.go
 
-bbgo.sqlite3
+*.sqlite3
 node_modules
 output
 
@@ -51,3 +51,16 @@ testoutput
 
 coverage.txt
 coverage_dum.txt
+
+*.cpuprofile
+
+.systemd.*
+
+/coverage.txt
+
+/otp.png
+
+/profile*.png
+
+*_local.yaml
+/.chglog/

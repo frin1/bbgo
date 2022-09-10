@@ -75,10 +75,12 @@ type SessionSymbolReport struct {
 	Market          types.Market              `json:"market"`
 	LastPrice       fixedpoint.Value          `json:"lastPrice,omitempty"`
 	StartPrice      fixedpoint.Value          `json:"startPrice,omitempty"`
-	PnL             *pnl.AverageCostPnlReport `json:"pnl,omitempty"`
+	PnL             *pnl.AverageCostPnLReport `json:"pnl,omitempty"`
 	InitialBalances types.BalanceMap          `json:"initialBalances,omitempty"`
 	FinalBalances   types.BalanceMap          `json:"finalBalances,omitempty"`
 	Manifests       Manifests                 `json:"manifests,omitempty"`
+	Sharpe          fixedpoint.Value          `json:"sharpeRatio"`
+	Sortino         fixedpoint.Value          `json:"sortinoRatio"`
 }
 
 func (r *SessionSymbolReport) InitialEquityValue() fixedpoint.Value {
@@ -115,6 +117,18 @@ func (r *SessionSymbolReport) Print(wantBaseAssetBaseline bool) {
 		color.Green("ASSET INCREASED: +%v %s (+%s)", finalQuoteAsset.Sub(initQuoteAsset), r.Market.QuoteCurrency, finalQuoteAsset.Sub(initQuoteAsset).Div(initQuoteAsset).FormatPercentage(2))
 	} else {
 		color.Red("ASSET DECREASED: %v %s (%s)", finalQuoteAsset.Sub(initQuoteAsset), r.Market.QuoteCurrency, finalQuoteAsset.Sub(initQuoteAsset).Div(initQuoteAsset).FormatPercentage(2))
+	}
+
+	if r.Sharpe.Sign() > 0 {
+		color.Green("REALIZED SHARPE RATIO: %s", r.Sharpe.FormatString(4))
+	} else {
+		color.Red("REALIZED SHARPE RATIO: %s", r.Sharpe.FormatString(4))
+	}
+
+	if r.Sortino.Sign() > 0 {
+		color.Green("REALIZED SORTINO RATIO: %s", r.Sortino.FormatString(4))
+	} else {
+		color.Red("REALIZED SORTINO RATIO: %s", r.Sortino.FormatString(4))
 	}
 
 	if wantBaseAssetBaseline {

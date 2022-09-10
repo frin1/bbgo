@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime/pprof"
 	"syscall"
 
 	"github.com/pkg/errors"
@@ -81,32 +80,6 @@ func runSetup(baseCtx context.Context, userConfig *bbgo.Config, enableApiServer 
 	return nil
 }
 
-func BootstrapBacktestEnvironment(ctx context.Context, environ *bbgo.Environment) error {
-	return environ.ConfigureDatabase(ctx)
-}
-
-func BootstrapEnvironment(ctx context.Context, environ *bbgo.Environment, userConfig *bbgo.Config) error {
-	if err := environ.ConfigureDatabase(ctx); err != nil {
-		return err
-	}
-
-	if err := environ.ConfigureExchangeSessions(userConfig); err != nil {
-		return errors.Wrap(err, "exchange session configure error")
-	}
-
-	if userConfig.Persistence != nil {
-		if err := environ.ConfigurePersistence(userConfig.Persistence); err != nil {
-			return errors.Wrap(err, "persistence configure error")
-		}
-	}
-
-	if err := environ.ConfigureNotificationSystem(userConfig); err != nil {
-		return errors.Wrap(err, "notification configure error")
-	}
-
-	return nil
-}
-
 func runConfig(basectx context.Context, cmd *cobra.Command, userConfig *bbgo.Config) error {
 	noSync, err := cmd.Flags().GetBool("no-sync")
 	if err != nil {
@@ -149,7 +122,7 @@ func runConfig(basectx context.Context, cmd *cobra.Command, userConfig *bbgo.Con
 	defer cancelTrading()
 
 	environ := bbgo.NewEnvironment()
-	if err := BootstrapEnvironment(ctx, environ, userConfig); err != nil {
+	if err := bbgo.BootstrapEnvironment(ctx, environ, userConfig); err != nil {
 		return err
 	}
 
@@ -244,11 +217,6 @@ func run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	cpuProfile, err := cmd.Flags().GetString("cpu-profile")
-	if err != nil {
-		return err
-	}
-
 	if !setup {
 		// if it's not setup, then the config file option is required.
 		if len(configFile) == 0 {
@@ -278,20 +246,6 @@ func run(cmd *cobra.Command, args []string) error {
 		userConfig, err = bbgo.Load(configFile, true)
 		if err != nil {
 			return err
-		}
-
-		if cpuProfile != "" {
-			f, err := os.Create(cpuProfile)
-			if err != nil {
-				log.Fatal("could not create CPU profile: ", err)
-			}
-			defer f.Close() // error handling omitted for example
-
-			if err := pprof.StartCPUProfile(f); err != nil {
-				log.Fatal("could not start CPU profile: ", err)
-			}
-
-			defer pprof.StopCPUProfile()
 		}
 
 		return runConfig(ctx, cmd, userConfig)

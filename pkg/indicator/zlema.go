@@ -1,6 +1,7 @@
 package indicator
 
 import (
+	"github.com/c9s/bbgo/pkg/datatype/floats"
 	"github.com/c9s/bbgo/pkg/types"
 )
 
@@ -12,7 +13,7 @@ type ZLEMA struct {
 	types.SeriesBase
 	types.IntervalWindow
 
-	data  types.Float64Slice
+	data  floats.Slice
 	zlema *EWMA
 	lag   int
 
@@ -43,7 +44,7 @@ func (inc *ZLEMA) Length() int {
 func (inc *ZLEMA) Update(value float64) {
 	if inc.lag == 0 || inc.zlema == nil {
 		inc.SeriesBase.Series = inc
-		inc.zlema = &EWMA{IntervalWindow: types.IntervalWindow{inc.Interval, inc.Window}}
+		inc.zlema = &EWMA{IntervalWindow: inc.IntervalWindow}
 		inc.lag = int((float64(inc.Window)-1.)/2. + 0.5)
 	}
 	inc.data.Push(value)

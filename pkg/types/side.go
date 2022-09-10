@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
+
+	"github.com/c9s/bbgo/pkg/style"
 )
 
 // SideType define side type of order
@@ -74,14 +76,14 @@ func (side SideType) String() string {
 
 func (side SideType) Color() string {
 	if side == SideTypeBuy {
-		return GreenColor
+		return style.GreenColor
 	}
 
 	if side == SideTypeSell {
-		return RedColor
+		return style.RedColor
 	}
 
-	return GrayColor
+	return style.GrayColor
 }
 
 func SideToColorName(side SideType) string {

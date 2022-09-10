@@ -23,6 +23,8 @@ type Value int64
 const Zero = Value(0)
 const One = Value(1e8)
 const NegOne = Value(-1e8)
+const PosInf = Value(math.MaxInt64)
+const NegInf = Value(math.MinInt64)
 
 type RoundingMode int
 
@@ -81,6 +83,11 @@ func (v *Value) Scan(src interface{}) error {
 }
 
 func (v Value) Float64() float64 {
+	if v == PosInf {
+		return math.Inf(1)
+	} else if v == NegInf {
+		return math.Inf(-1)
+	}
 	return float64(v) / DefaultPow
 }
 
@@ -92,10 +99,20 @@ func (v Value) Abs() Value {
 }
 
 func (v Value) String() string {
+	if v == PosInf {
+		return "inf"
+	} else if v == NegInf {
+		return "-inf"
+	}
 	return strconv.FormatFloat(float64(v)/DefaultPow, 'f', -1, 64)
 }
 
 func (v Value) FormatString(prec int) string {
+	if v == PosInf {
+		return "inf"
+	} else if v == NegInf {
+		return "-inf"
+	}
 	pow := math.Pow10(prec)
 	return strconv.FormatFloat(
 		math.Trunc(float64(v)/DefaultPow*pow)/pow, 'f', prec, 64)
@@ -105,12 +122,22 @@ func (v Value) Percentage() string {
 	if v == 0 {
 		return "0"
 	}
+	if v == PosInf {
+		return "inf%"
+	} else if v == NegInf {
+		return "-inf%"
+	}
 	return strconv.FormatFloat(float64(v)/DefaultPow*100., 'f', -1, 64) + "%"
 }
 
 func (v Value) FormatPercentage(prec int) string {
 	if v == 0 {
 		return "0"
+	}
+	if v == PosInf {
+		return "inf%"
+	} else if v == NegInf {
+		return "-inf%"
 	}
 	pow := math.Pow10(prec)
 	result := strconv.FormatFloat(
@@ -215,6 +242,9 @@ func (v Value) MarshalYAML() (interface{}, error) {
 }
 
 func (v Value) MarshalJSON() ([]byte, error) {
+	if v.IsInf() {
+		return []byte("\"" + v.String() + "\""), nil
+	}
 	return []byte(v.FormatString(DefaultPrecision)), nil
 }
 
@@ -317,6 +347,7 @@ func NewFromString(input string) (Value, error) {
 	decimalCount := 0
 	// if is decimal, we don't need this
 	hasScientificNotion := false
+	hasIChar := false
 	scIndex := -1
 	for i, c := range input {
 		if hasDecimal {
@@ -333,6 +364,10 @@ func NewFromString(input string) (Value, error) {
 		if c == 'e' || c == 'E' {
 			hasScientificNotion = true
 			scIndex = i
+			break
+		}
+		if c == 'i' || c == 'I' {
+			hasIChar = true
 			break
 		}
 	}
@@ -365,6 +400,16 @@ func NewFromString(input string) (Value, error) {
 			return 0, err
 		}
 		return Value(int64(math.Trunc(v))), nil
+	} else if hasIChar {
+		if floatV, err := strconv.ParseFloat(input, 64); nil != err {
+			return 0, err
+		} else if math.IsInf(floatV, 1) {
+			return PosInf, nil
+		} else if math.IsInf(floatV, -1) {
+			return NegInf, nil
+		} else {
+			return 0, fmt.Errorf("fixedpoint.Value parse error, invalid input string %s", input)
+		}
 	} else {
 		v, err := strconv.ParseInt(input, 10, 64)
 		if err != nil {
@@ -407,11 +452,20 @@ func Must(v Value, err error) Value {
 }
 
 func NewFromFloat(val float64) Value {
+	if math.IsInf(val, 1) {
+		return PosInf
+	} else if math.IsInf(val, -1) {
+		return NegInf
+	}
 	return Value(int64(math.Trunc(val * DefaultPow)))
 }
 
 func NewFromInt(val int64) Value {
 	return Value(val * DefaultPow)
+}
+
+func (a Value) IsInf() bool {
+	return a == PosInf || a == NegInf
 }
 
 func (a Value) MulExp(exp int) Value {

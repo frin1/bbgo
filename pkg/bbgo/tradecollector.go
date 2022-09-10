@@ -2,6 +2,7 @@ package bbgo
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -22,6 +23,8 @@ type TradeCollector struct {
 	orderStore *OrderStore
 	doneTrades map[types.TradeKey]struct{}
 
+	mu sync.Mutex
+
 	recoverCallbacks []func(trade types.Trade)
 
 	tradeCallbacks []func(trade types.Trade, profit, netProfit fixedpoint.Value)
@@ -36,7 +39,7 @@ func NewTradeCollector(symbol string, position *types.Position, orderStore *Orde
 		orderSig: sigchan.New(1),
 
 		tradeC:     make(chan types.Trade, 100),
-		tradeStore: NewTradeStore(symbol),
+		tradeStore: NewTradeStore(),
 		doneTrades: make(map[types.TradeKey]struct{}),
 		position:   position,
 		orderStore: orderStore,
@@ -100,13 +103,23 @@ func (c *TradeCollector) Recover(ctx context.Context, ex types.ExchangeTradeHist
 	return nil
 }
 
+func (c *TradeCollector) setDone(key types.TradeKey) {
+	c.mu.Lock()
+	c.doneTrades[key] = struct{}{}
+	c.mu.Unlock()
+}
+
 // Process filters the received trades and see if there are orders matching the trades
 // if we have the order in the order store, then the trade will be considered for the position.
 // profit will also be calculated.
 func (c *TradeCollector) Process() bool {
 	positionChanged := false
+
 	c.tradeStore.Filter(func(trade types.Trade) bool {
 		key := trade.Key()
+
+		c.mu.Lock()
+		defer c.mu.Unlock()
 
 		// if it's already done, remove the trade from the trade store
 		if _, done := c.doneTrades[key]; done {
@@ -114,22 +127,28 @@ func (c *TradeCollector) Process() bool {
 		}
 
 		if c.orderStore.Exists(trade.OrderID) {
-			c.doneTrades[key] = struct{}{}
-			profit, netProfit, madeProfit := c.position.AddTrade(trade)
-			if madeProfit {
-				p := c.position.NewProfit(trade, profit, netProfit)
-				c.EmitTrade(trade, profit, netProfit)
-				c.EmitProfit(trade, &p)
+			if c.position != nil {
+				profit, netProfit, madeProfit := c.position.AddTrade(trade)
+				if madeProfit {
+					p := c.position.NewProfit(trade, profit, netProfit)
+					c.EmitTrade(trade, profit, netProfit)
+					c.EmitProfit(trade, &p)
+				} else {
+					c.EmitTrade(trade, fixedpoint.Zero, fixedpoint.Zero)
+					c.EmitProfit(trade, nil)
+				}
+				positionChanged = true
 			} else {
 				c.EmitTrade(trade, fixedpoint.Zero, fixedpoint.Zero)
-				c.EmitProfit(trade, nil)
 			}
-			positionChanged = true
+
+			c.doneTrades[key] = struct{}{}
 			return true
 		}
 		return false
 	})
-	if positionChanged {
+
+	if positionChanged && c.position != nil {
 		c.EmitPositionUpdate(c.position)
 	}
 
@@ -141,24 +160,32 @@ func (c *TradeCollector) Process() bool {
 // return true when the given trade is added
 // return false when the given trade is not added
 func (c *TradeCollector) processTrade(trade types.Trade) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	key := trade.Key()
+
+	// if it's already done, remove the trade from the trade store
+	if _, done := c.doneTrades[key]; done {
+		return false
+	}
+
 	if c.orderStore.Exists(trade.OrderID) {
-		key := trade.Key()
-
-		// if it's already done, remove the trade from the trade store
-		if _, done := c.doneTrades[key]; done {
-			return false
-		}
-
-		profit, netProfit, madeProfit := c.position.AddTrade(trade)
-		if madeProfit {
-			p := c.position.NewProfit(trade, profit, netProfit)
-			c.EmitTrade(trade, profit, netProfit)
-			c.EmitProfit(trade, &p)
+		if c.position != nil {
+			profit, netProfit, madeProfit := c.position.AddTrade(trade)
+			if madeProfit {
+				p := c.position.NewProfit(trade, profit, netProfit)
+				c.EmitTrade(trade, profit, netProfit)
+				c.EmitProfit(trade, &p)
+			} else {
+				c.EmitTrade(trade, fixedpoint.Zero, fixedpoint.Zero)
+				c.EmitProfit(trade, nil)
+			}
+			c.EmitPositionUpdate(c.position)
 		} else {
 			c.EmitTrade(trade, fixedpoint.Zero, fixedpoint.Zero)
-			c.EmitProfit(trade, nil)
 		}
-		c.EmitPositionUpdate(c.position)
+
 		c.doneTrades[key] = struct{}{}
 		return true
 	}

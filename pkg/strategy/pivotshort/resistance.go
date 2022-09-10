@@ -4,9 +4,9 @@ import (
 	"context"
 
 	"github.com/c9s/bbgo/pkg/bbgo"
+	"github.com/c9s/bbgo/pkg/datatype/floats"
 	"github.com/c9s/bbgo/pkg/fixedpoint"
 	"github.com/c9s/bbgo/pkg/indicator"
-	"github.com/c9s/bbgo/pkg/risk"
 	"github.com/c9s/bbgo/pkg/types"
 )
 
@@ -25,7 +25,7 @@ type ResistanceShort struct {
 	Leverage      fixedpoint.Value `json:"leverage"`
 	Ratio         fixedpoint.Value `json:"ratio"`
 
-	TrendEMA *TrendEMA `json:"trendEMA"`
+	TrendEMA *bbgo.TrendEMA `json:"trendEMA"`
 
 	session       *bbgo.ExchangeSession
 	orderExecutor *bbgo.GeneralOrderExecutor
@@ -38,6 +38,8 @@ type ResistanceShort struct {
 }
 
 func (s *ResistanceShort) Subscribe(session *bbgo.ExchangeSession) {
+	session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.Interval})
+
 	if s.TrendEMA != nil {
 		session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.TrendEMA.Interval})
 	}
@@ -58,9 +60,6 @@ func (s *ResistanceShort) Bind(session *bbgo.ExchangeSession, orderExecutor *bbg
 	s.activeOrders.BindStream(session.UserDataStream)
 
 	if s.TrendEMA != nil {
-		if s.TrendEMA.MaxGradient == 0.0 {
-			s.TrendEMA.MaxGradient = 1.0
-		}
 		s.TrendEMA.Bind(session, orderExecutor)
 	}
 
@@ -128,7 +127,7 @@ func (s *ResistanceShort) updateResistanceOrders(closePrice fixedpoint.Value) {
 }
 
 func (s *ResistanceShort) placeResistanceOrders(ctx context.Context, resistancePrice fixedpoint.Value) {
-	totalQuantity, err := risk.CalculateBaseQuantity(s.session, s.Market, resistancePrice, s.Quantity, s.Leverage)
+	totalQuantity, err := bbgo.CalculateBaseQuantity(s.session, s.Market, resistancePrice, s.Quantity, s.Leverage)
 	if err != nil {
 		log.WithError(err).Errorf("quantity calculation error")
 	}
@@ -189,9 +188,9 @@ func (s *ResistanceShort) placeResistanceOrders(ctx context.Context, resistanceP
 }
 
 func findPossibleSupportPrices(closePrice float64, groupDistance float64, lows []float64) []float64 {
-	return group(lower(lows, closePrice), groupDistance)
+	return floats.Group(floats.Lower(lows, closePrice), groupDistance)
 }
 
 func findPossibleResistancePrices(closePrice float64, groupDistance float64, lows []float64) []float64 {
-	return group(higher(lows, closePrice), groupDistance)
+	return floats.Group(floats.Higher(lows, closePrice), groupDistance)
 }

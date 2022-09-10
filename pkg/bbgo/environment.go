@@ -21,7 +21,7 @@ import (
 	"github.com/spf13/viper"
 	"gopkg.in/tucnak/telebot.v2"
 
-	exchange2 "github.com/c9s/bbgo/pkg/exchange"
+	"github.com/c9s/bbgo/pkg/exchange"
 	"github.com/c9s/bbgo/pkg/fixedpoint"
 	"github.com/c9s/bbgo/pkg/interact"
 	"github.com/c9s/bbgo/pkg/notifier/slacknotifier"
@@ -30,6 +30,7 @@ import (
 	"github.com/c9s/bbgo/pkg/slack/slacklog"
 	"github.com/c9s/bbgo/pkg/types"
 	"github.com/c9s/bbgo/pkg/util"
+	"github.com/c9s/bbgo/pkg/util/templateutil"
 )
 
 func init() {
@@ -222,12 +223,12 @@ func (environ *Environment) ConfigureExchangeSessions(userConfig *Config) error 
 func (environ *Environment) AddExchangesByViperKeys() error {
 	for _, n := range types.SupportedExchanges {
 		if viper.IsSet(string(n) + "-api-key") {
-			exchange, err := exchange2.NewWithEnvVarPrefix(n, "")
+			ex, err := exchange.NewWithEnvVarPrefix(n, "")
 			if err != nil {
 				return err
 			}
 
-			environ.AddExchange(n.String(), exchange)
+			environ.AddExchange(n.String(), ex)
 		}
 	}
 
@@ -366,7 +367,7 @@ func (environ *Environment) ConfigureNotificationRouting(conf *NotificationConfi
 
 		case "$session":
 			defaultOrderUpdateHandler := func(order types.Order) {
-				text := util.Render(TemplateOrderReport, order)
+				text := templateutil.Render(TemplateOrderReport, order)
 				Notify(text, &order)
 			}
 			for name := range environ.sessions {
@@ -376,7 +377,7 @@ func (environ *Environment) ConfigureNotificationRouting(conf *NotificationConfi
 				channel, ok := Notification.SessionChannelRouter.Route(name)
 				if ok {
 					session.UserDataStream.OnOrderUpdate(func(order types.Order) {
-						text := util.Render(TemplateOrderReport, order)
+						text := templateutil.Render(TemplateOrderReport, order)
 						NotifyTo(channel, text, &order)
 					})
 				} else {
@@ -397,7 +398,7 @@ func (environ *Environment) ConfigureNotificationRouting(conf *NotificationConfi
 
 			// use same handler for each session
 			handler := func(order types.Order) {
-				text := util.Render(TemplateOrderReport, order)
+				text := templateutil.Render(TemplateOrderReport, order)
 				channel, ok := Notification.RouteObject(&order)
 				if ok {
 					NotifyTo(channel, text, &order)
@@ -1100,7 +1101,7 @@ To scan your OTP QR code, please run the following command:
 	
 	open %s
 
-For telegram, send the auth command with the generated one-time password to the bbo bot you created to enable the notification:
+For telegram, send the auth command with the generated one-time password to the bbgo bot you created to enable the notification:
 
 	/auth
 

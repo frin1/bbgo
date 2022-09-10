@@ -1,6 +1,8 @@
 package bbgo
 
 import (
+	"bytes"
+	"encoding/json"
 	"reflect"
 
 	"github.com/pkg/errors"
@@ -30,9 +32,53 @@ type ExitMethod struct {
 	RoiStopLoss               *RoiStopLoss               `json:"roiStopLoss"`
 	ProtectiveStopLoss        *ProtectiveStopLoss        `json:"protectiveStopLoss"`
 	RoiTakeProfit             *RoiTakeProfit             `json:"roiTakeProfit"`
+	TrailingStop              *TrailingStop2             `json:"trailingStop"`
+
+	// Exit methods for short positions
+	// =================================================
 	LowerShadowTakeProfit     *LowerShadowTakeProfit     `json:"lowerShadowTakeProfit"`
 	CumulatedVolumeTakeProfit *CumulatedVolumeTakeProfit `json:"cumulatedVolumeTakeProfit"`
-	TrailingStop              *TrailingStop2             `json:"trailingStop"`
+	SupportTakeProfit         *SupportTakeProfit       `json:"supportTakeProfit"`
+}
+
+func (e ExitMethod) String() string {
+	var buf bytes.Buffer
+	if e.RoiStopLoss != nil {
+		b, _ := json.Marshal(e.RoiStopLoss)
+		buf.WriteString("roiStopLoss: " + string(b) + ", ")
+	}
+
+	if e.ProtectiveStopLoss != nil {
+		b, _ := json.Marshal(e.ProtectiveStopLoss)
+		buf.WriteString("protectiveStopLoss: " + string(b) + ", ")
+	}
+
+	if e.RoiTakeProfit != nil {
+		b, _ := json.Marshal(e.RoiTakeProfit)
+		buf.WriteString("rioTakeProft: " + string(b) + ", ")
+	}
+
+	if e.LowerShadowTakeProfit != nil {
+		b, _ := json.Marshal(e.LowerShadowTakeProfit)
+		buf.WriteString("lowerShadowTakeProft: " + string(b) + ", ")
+	}
+
+	if e.CumulatedVolumeTakeProfit != nil {
+		b, _ := json.Marshal(e.CumulatedVolumeTakeProfit)
+		buf.WriteString("cumulatedVolumeTakeProfit: " + string(b) + ", ")
+	}
+
+	if e.TrailingStop != nil {
+		b, _ := json.Marshal(e.TrailingStop)
+		buf.WriteString("trailingStop: " + string(b) + ", ")
+	}
+
+	if e.SupportTakeProfit != nil {
+		b, _ := json.Marshal(e.SupportTakeProfit)
+		buf.WriteString("supportTakeProfit: " + string(b) + ", ")
+	}
+
+	return buf.String()
 }
 
 // Inherit is used for inheriting properties from the given strategy struct
@@ -80,6 +126,10 @@ func (m *ExitMethod) Bind(session *ExchangeSession, orderExecutor *GeneralOrderE
 
 	if m.CumulatedVolumeTakeProfit != nil {
 		m.CumulatedVolumeTakeProfit.Bind(session, orderExecutor)
+	}
+
+	if m.SupportTakeProfit != nil {
+		m.SupportTakeProfit.Bind(session, orderExecutor)
 	}
 
 	if m.TrailingStop != nil {

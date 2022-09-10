@@ -1,4 +1,28 @@
 #!/bin/bash
+#
+# Setup:
+#
+# 1) Make sure that you have the SSH host called "bbgo" and your linux system has systemd installed.
+#
+# 2) Use ssh to connect the bbgo host
+#
+#      $ ssh bbgo
+#
+# 3) On the REMOTE server, create directory, setup the dotenv file and the bbgo.yaml config file
+#      $ mkdir bbgo
+#      $ vim bbgo/.env.local
+#      $ vim bbgo/bbgo.yaml
+#
+# 4) Make sure your REMOTE user can use SUDO WITHOUT PASSWORD.
+#
+# 5) Run the following command to setup systemd from LOCAL:
+#
+#      $ SETUP_SYSTEMD=yes sh deploy.sh bbgo
+#
+# 6) To update your existing deployment, simply run deploy.sh again:
+#
+#      $ sh deploy.sh bbgo
+#
 set -e
 
 target=$1
@@ -13,8 +37,8 @@ bin_type=bbgo-slim
 host_bin_dir=bin
 
 host=bbgo
-host_user=root
-host_home=/root
+# host_user=ubuntu
+# host_home=/root
 
 host_systemd_service_dir=/etc/systemd/system
 host_os=linux
@@ -29,6 +53,13 @@ setup_host_systemd_service=no
 if [[ -n $SETUP_SYSTEMD ]] ; then
     setup_host_systemd_service=yes
 fi
+
+
+use_dnum=no
+if [[ -n $USE_DNUM ]] ; then
+    use_dnum=yes
+fi
+
 
 
 # use the git describe as the binary version, you may override this with something else.
@@ -92,6 +123,11 @@ if [[ $(remote_test "-e $host_systemd_service_dir/$target.service") != "yes" ]];
     host_home=$(remote_eval "\$HOME")
   fi
 
+  if [[ -z $host_user ]]; then
+    host_user=$(remote_eval "\$USER")
+  fi
+
+
   cat <<END >".systemd.$target.service"
 [Unit]
 After=network-online.target
@@ -110,27 +146,42 @@ RestartSec=30
 END
 
   info "uploading systemd service file..."
-  scp ".systemd.$target.service" "$host:$host_systemd_service_dir/$target.service"
+  scp ".systemd.$target.service" "$host:$target.service"
+  remote_run "sudo mv -v $target.service $host_systemd_service_dir/$target.service"
+  # scp ".systemd.$target.service" "$host:$host_systemd_service_dir/$target.service"
 
   info "reloading systemd daemon..."
-  remote_run "sudo systemctl daemon-reload && systemctl enable $target"
+  remote_run "sudo systemctl daemon-reload && sudo systemctl enable $target"
 fi
 
-info "building binary: $bin_type-$host_os-$host_arch..."
-make $bin_type-$host_os-$host_arch
+
+bin_target=$bin_type-$host_os-$host_arch
+
+if [[ "$use_dnum" == "yes" ]]; then
+  bin_target=$bin_type-dnum-$host_os-$host_arch
+fi
+
+
+info "building binary: $bin_target..."
+make $bin_target
 
 # copy the binary to the server
 info "deploying..."
 info "copying binary to host $host..."
 
 if [[ $(remote_test "-e $host_bin_dir/bbgo-$tag") != "yes" ]] ; then
-  scp build/bbgo/$bin_type-$host_os-$host_arch $host:$host_bin_dir/bbgo-$tag
+  scp build/bbgo/$bin_target $host:$host_bin_dir/bbgo-$tag
 else
   info "binary $host_bin_dir/bbgo-$tag already exists, we will use the existing one"
 fi
 
-# link binary and restart the systemd service
-info "linking binary and restarting..."
-ssh $host "(cd $target && ln -sf \$HOME/$host_bin_dir/bbgo-$tag bbgo && sudo systemctl restart $target.service)"
+if [[ -n "$UPLOAD_ONLY" ]] ; then
+  # link binary and restart the systemd service
+  info "linking binary"
+  ssh $host "(cd $target && ln -sf \$HOME/$host_bin_dir/bbgo-$tag bbgo)"
+else
+  info "linking binary and restarting..."
+  ssh $host "(cd $target && ln -sf \$HOME/$host_bin_dir/bbgo-$tag bbgo && sudo systemctl restart $target.service)"
+fi
 
 info "deployed successfully!"

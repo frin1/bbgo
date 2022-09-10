@@ -8,6 +8,8 @@ import (
 
 	"github.com/wcharczuk/go-chart/v2"
 	"gonum.org/v1/gonum/stat"
+
+	"github.com/c9s/bbgo/pkg/datatype/floats"
 )
 
 // Super basic Series type that simply holds the float64 data
@@ -94,7 +96,7 @@ type SeriesExtend interface {
 	Mul(b interface{}) SeriesExtend
 	Dot(b interface{}, limit ...int) float64
 	Array(limit ...int) (result []float64)
-	Reverse(limit ...int) (result Float64Slice)
+	Reverse(limit ...int) (result floats.Slice)
 	Change(offset ...int) SeriesExtend
 	PercentageChange(offset ...int) SeriesExtend
 	Stdev(params ...int) float64
@@ -178,6 +180,9 @@ func Sum(a Series, limit ...int) (sum float64) {
 // otherwise will operate on all elements
 func Mean(a Series, limit ...int) (mean float64) {
 	l := a.Length()
+	if l == 0 {
+		return 0
+	}
 	if len(limit) > 0 && limit[0] < l {
 		l = limit[0]
 	}
@@ -649,7 +654,7 @@ func Array(a Series, limit ...int) (result []float64) {
 // the then reuse the result in multiple places (so that no recalculation will be triggered)
 //
 // notice that the return type is a Float64Slice, which implements the Series interface
-func Reverse(a Series, limit ...int) (result Float64Slice) {
+func Reverse(a Series, limit ...int) (result floats.Slice) {
 	l := a.Length()
 	if len(limit) > 0 && l > limit[0] {
 		l = limit[0]
@@ -739,6 +744,9 @@ func PercentageChange(a Series, offset ...int) SeriesExtend {
 
 func Stdev(a Series, params ...int) float64 {
 	length := a.Length()
+	if length == 0 {
+		return 0
+	}
 	if len(params) > 0 && params[0] < length {
 		length = params[0]
 	}
@@ -751,6 +759,9 @@ func Stdev(a Series, params ...int) float64 {
 	for i := 0; i < length; i++ {
 		diff := a.Index(i) - avg
 		s += diff * diff
+	}
+	if length-ddof == 0 {
+		return 0
 	}
 	return math.Sqrt(s / float64(length-ddof))
 }
@@ -1192,16 +1203,35 @@ func NewCanvas(title string, intervals ...Interval) *Canvas {
 	return out
 }
 
-func (canvas *Canvas) Plot(tag string, a Series, endTime Time, length int) {
+func expand(a []float64, length int, defaultVal float64) []float64 {
+	l := len(a)
+	if l >= length {
+		return a
+	}
+	for i := 0; i < length-l; i++ {
+		a = append([]float64{defaultVal}, a...)
+	}
+	return a
+}
+
+func (canvas *Canvas) Plot(tag string, a Series, endTime Time, length int, intervals ...Interval) {
 	var timeline []time.Time
 	e := endTime.Time()
+	if a.Length() == 0 {
+		return
+	}
+	oldest := a.Index(a.Length() - 1)
+	interval := canvas.Interval
+	if len(intervals) > 0 {
+		interval = intervals[0]
+	}
 	for i := length - 1; i >= 0; i-- {
-		shiftedT := e.Add(-time.Duration(i*canvas.Interval.Minutes()) * time.Minute)
+		shiftedT := e.Add(-time.Duration(i*interval.Minutes()) * time.Minute)
 		timeline = append(timeline, shiftedT)
 	}
 	canvas.Series = append(canvas.Series, chart.TimeSeries{
 		Name:    tag,
-		YValues: Reverse(a, length),
+		YValues: expand(Reverse(a, length), length, oldest),
 		XValues: timeline,
 	})
 }
@@ -1211,10 +1241,14 @@ func (canvas *Canvas) PlotRaw(tag string, a Series, length int) {
 	for i := 0; i < length; i++ {
 		x = append(x, float64(i))
 	}
+	if a.Length() == 0 {
+		return
+	}
+	oldest := a.Index(a.Length() - 1)
 	canvas.Series = append(canvas.Series, chart.ContinuousSeries{
 		Name:    tag,
 		XValues: x,
-		YValues: Reverse(a, length),
+		YValues: expand(Reverse(a, length), length, oldest),
 	})
 }
 

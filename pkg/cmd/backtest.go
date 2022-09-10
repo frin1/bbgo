@@ -24,6 +24,7 @@ import (
 	"github.com/c9s/bbgo/pkg/cmd/cmdutil"
 	"github.com/c9s/bbgo/pkg/data/tsv"
 	"github.com/c9s/bbgo/pkg/exchange"
+	"github.com/c9s/bbgo/pkg/fixedpoint"
 	"github.com/c9s/bbgo/pkg/service"
 	"github.com/c9s/bbgo/pkg/types"
 	"github.com/c9s/bbgo/pkg/util"
@@ -134,23 +135,27 @@ var BacktestCmd = &cobra.Command{
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		var now = time.Now()
+		var now = time.Now().Local()
 		var startTime, endTime time.Time
 
-		startTime = userConfig.Backtest.StartTime.Time()
+		startTime = userConfig.Backtest.StartTime.Time().Local()
 
 		// set default start time to the past 6 months
 		// userConfig.Backtest.StartTime = now.AddDate(0, -6, 0).Format("2006-01-02")
 		if userConfig.Backtest.EndTime != nil {
-			endTime = userConfig.Backtest.EndTime.Time()
+			endTime = userConfig.Backtest.EndTime.Time().Local()
 		} else {
 			endTime = now
 		}
 
-		log.Infof("starting backtest with startTime %s", startTime.Format(time.ANSIC))
+		// ensure that we're using local time
+		startTime = startTime.Local()
+		endTime = endTime.Local()
+
+		log.Infof("starting backtest with startTime %s", startTime.Format(time.RFC3339))
 
 		environ := bbgo.NewEnvironment()
-		if err := BootstrapBacktestEnvironment(ctx, environ); err != nil {
+		if err := bbgo.BootstrapBacktestEnvironment(ctx, environ); err != nil {
 			return err
 		}
 
@@ -199,6 +204,8 @@ var BacktestCmd = &cobra.Command{
 			if syncFromTime.After(startTime) {
 				return fmt.Errorf("sync-from time %s can not be latter than the backtest start time %s", syncFromTime, startTime)
 			}
+
+			syncFromTime = syncFromTime.Local()
 		} else {
 			// we need at least 1 month backward data for EMA and last prices
 			syncFromTime = startTime.AddDate(0, -1, 0)
@@ -207,13 +214,13 @@ var BacktestCmd = &cobra.Command{
 
 		if wantSync {
 			log.Infof("starting synchronization: %v", userConfig.Backtest.Symbols)
-			if err := sync(ctx, userConfig, backtestService, sourceExchanges, syncFromTime.Local(), endTime.Local()); err != nil {
+			if err := sync(ctx, userConfig, backtestService, sourceExchanges, syncFromTime, endTime); err != nil {
 				return err
 			}
 			log.Info("synchronization done")
 
 			if shouldVerify {
-				err := verify(userConfig, backtestService, sourceExchanges, syncFromTime.Local(), endTime.Local())
+				err := verify(userConfig, backtestService, sourceExchanges, syncFromTime, endTime)
 				if err != nil {
 					return err
 				}
@@ -297,6 +304,42 @@ var BacktestCmd = &cobra.Command{
 		var manifests backtest.Manifests
 		var runID = userConfig.GetSignature() + "_" + uuid.NewString()
 		var reportDir = outputDirectory
+		var sessionTradeStats = make(map[string]map[string]*types.TradeStats)
+
+		var tradeCollectorList []*bbgo.TradeCollector
+		for _, exSource := range exchangeSources {
+			sessionName := exSource.Session.Name
+			tradeStatsMap := make(map[string]*types.TradeStats)
+			for usedSymbol := range exSource.Session.Positions() {
+				market, _ := exSource.Session.Market(usedSymbol)
+				position := types.NewPositionFromMarket(market)
+				orderStore := bbgo.NewOrderStore(usedSymbol)
+				orderStore.AddOrderUpdate = true
+				tradeCollector := bbgo.NewTradeCollector(usedSymbol, position, orderStore)
+
+				tradeStats := types.NewTradeStats(usedSymbol)
+				tradeStats.SetIntervalProfitCollector(types.NewIntervalProfitCollector(types.Interval1d, startTime))
+				tradeCollector.OnProfit(func(trade types.Trade, profit *types.Profit) {
+					if profit == nil {
+						return
+					}
+					tradeStats.Add(profit)
+				})
+				tradeStatsMap[usedSymbol] = tradeStats
+
+				orderStore.BindStream(exSource.Session.UserDataStream)
+				tradeCollector.BindStream(exSource.Session.UserDataStream)
+				tradeCollectorList = append(tradeCollectorList, tradeCollector)
+			}
+			sessionTradeStats[sessionName] = tradeStatsMap
+		}
+		kLineHandlers = append(kLineHandlers, func(k types.KLine, _ *backtest.ExchangeDataSource) {
+			if k.Interval == types.Interval1d && k.Closed {
+				for _, collector := range tradeCollectorList {
+					collector.Process()
+				}
+			}
+		})
 
 		if generatingReport {
 			if reportFileInSubDir {
@@ -401,6 +444,9 @@ var BacktestCmd = &cobra.Command{
 		}
 
 		runCtx, cancelRun := context.WithCancel(ctx)
+		for _, exK := range exchangeSources {
+			exK.Callbacks = kLineHandlers
+		}
 		go func() {
 			defer cancelRun()
 
@@ -410,11 +456,6 @@ var BacktestCmd = &cobra.Command{
 				exSource := exchangeSources[0]
 				for k := range exSource.C {
 					exSource.Exchange.ConsumeKLine(k)
-
-					for _, h := range kLineHandlers {
-						h(k, &exSource)
-					}
-
 				}
 
 				if err := exSource.Exchange.CloseMarketData(); err != nil {
@@ -436,10 +477,6 @@ var BacktestCmd = &cobra.Command{
 					}
 
 					exK.Exchange.ConsumeKLine(k)
-
-					for _, h := range kLineHandlers {
-						h(k, &exK)
-					}
 				}
 			}
 		}()
@@ -494,7 +531,8 @@ var BacktestCmd = &cobra.Command{
 
 		for _, session := range environ.Sessions() {
 			for symbol, trades := range session.Trades {
-				symbolReport, err := createSymbolReport(userConfig, session, symbol, trades.Trades)
+				intervalProfits := sessionTradeStats[session.Name][symbol].IntervalProfits[types.Interval1d]
+				symbolReport, err := createSymbolReport(userConfig, session, symbol, trades.Trades, intervalProfits)
 				if err != nil {
 					return err
 				}
@@ -510,7 +548,7 @@ var BacktestCmd = &cobra.Command{
 
 				// write report to a file
 				if generatingReport {
-					reportFileName := fmt.Sprintf("symbol_report_%s.json", symbol)
+					reportFileName := fmt.Sprintf("symbol_report_%s_%s.json", session.Name, symbol)
 					if err := util.WriteJsonFile(filepath.Join(reportDir, reportFileName), &symbolReport); err != nil {
 						return err
 					}
@@ -525,7 +563,12 @@ var BacktestCmd = &cobra.Command{
 			fmt.Println(summaryReportFile)
 
 			if err := util.WriteJsonFile(summaryReportFile, summaryReport); err != nil {
-				return err
+				return errors.Wrapf(err, "can not write summary report json file: %s", summaryReportFile)
+			}
+
+			configJsonFile := filepath.Join(reportDir, "config.json")
+			if err := util.WriteJsonFile(configJsonFile, userConfig); err != nil {
+				return errors.Wrapf(err, "can not write config json file: %s", configJsonFile)
 			}
 
 			// append report index
@@ -545,7 +588,6 @@ var BacktestCmd = &cobra.Command{
 			color.Green("END TIME: %s\n", endTime.Format(time.RFC1123))
 			color.Green("INITIAL TOTAL BALANCE: %v\n", initTotalBalances)
 			color.Green("FINAL TOTAL BALANCE: %v\n", finalTotalBalances)
-
 			for _, symbolReport := range summaryReport.SymbolReports {
 				symbolReport.Print(wantBaseAssetBaseline)
 			}
@@ -555,7 +597,10 @@ var BacktestCmd = &cobra.Command{
 	},
 }
 
-func createSymbolReport(userConfig *bbgo.Config, session *bbgo.ExchangeSession, symbol string, trades []types.Trade) (*backtest.SessionSymbolReport, error) {
+func createSymbolReport(userConfig *bbgo.Config, session *bbgo.ExchangeSession, symbol string, trades []types.Trade, intervalProfit *types.IntervalProfitCollector) (
+	*backtest.SessionSymbolReport,
+	error,
+) {
 	backtestExchange, ok := session.Exchange.(*backtest.Exchange)
 	if !ok {
 		return nil, fmt.Errorf("unexpected error, exchange instance is not a backtest exchange")
@@ -581,6 +626,9 @@ func createSymbolReport(userConfig *bbgo.Config, session *bbgo.ExchangeSession, 
 		Market:             market,
 	}
 
+	sharpeRatio := fixedpoint.NewFromFloat(intervalProfit.GetSharpe())
+	sortinoRatio := fixedpoint.NewFromFloat(intervalProfit.GetSortino())
+
 	report := calculator.Calculate(symbol, trades, lastPrice)
 	accountConfig := userConfig.Backtest.GetAccount(session.Exchange.Name().String())
 	initBalances := accountConfig.Balances.BalanceMap()
@@ -595,6 +643,8 @@ func createSymbolReport(userConfig *bbgo.Config, session *bbgo.ExchangeSession, 
 		InitialBalances: initBalances,
 		FinalBalances:   finalBalances,
 		// Manifests:       manifests,
+		Sharpe:  sharpeRatio,
+		Sortino: sortinoRatio,
 	}
 
 	for _, s := range session.Subscriptions {
@@ -647,7 +697,7 @@ func confirmation(s string) bool {
 	}
 }
 
-func toExchangeSources(sessions map[string]*bbgo.ExchangeSession, startTime, endTime time.Time, extraIntervals ...types.Interval) (exchangeSources []backtest.ExchangeDataSource, err error) {
+func toExchangeSources(sessions map[string]*bbgo.ExchangeSession, startTime, endTime time.Time, extraIntervals ...types.Interval) (exchangeSources []*backtest.ExchangeDataSource, err error) {
 	for _, session := range sessions {
 		backtestEx := session.Exchange.(*backtest.Exchange)
 
@@ -657,11 +707,13 @@ func toExchangeSources(sessions map[string]*bbgo.ExchangeSession, startTime, end
 		}
 
 		sessionCopy := session
-		exchangeSources = append(exchangeSources, backtest.ExchangeDataSource{
+		src := &backtest.ExchangeDataSource{
 			C:        c,
 			Exchange: backtestEx,
 			Session:  sessionCopy,
-		})
+		}
+		backtestEx.Src = src
+		exchangeSources = append(exchangeSources, src)
 	}
 	return exchangeSources, nil
 }

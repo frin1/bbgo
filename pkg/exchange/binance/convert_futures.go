@@ -41,7 +41,12 @@ func toGlobalFuturesPositions(futuresPositions []*futures.AccountPosition) types
 	retFuturesPositions := make(types.FuturesPositionMap)
 	for _, futuresPosition := range futuresPositions {
 		retFuturesPositions[futuresPosition.Symbol] = types.FuturesPosition{ // TODO: types.FuturesPosition
-			Isolated: futuresPosition.Isolated,
+			Isolated:               futuresPosition.Isolated,
+			AverageCost:            fixedpoint.MustNewFromString(futuresPosition.EntryPrice),
+			ApproximateAverageCost: fixedpoint.MustNewFromString(futuresPosition.EntryPrice),
+			Base:                   fixedpoint.MustNewFromString(futuresPosition.PositionAmt),
+			Quote:                  fixedpoint.MustNewFromString(futuresPosition.Notional),
+
 			PositionRisk: &types.PositionRisk{
 				Leverage: fixedpoint.MustNewFromString(futuresPosition.Leverage),
 			},
@@ -94,9 +99,9 @@ func toLocalFuturesOrderType(orderType types.OrderType) (futures.OrderType, erro
 	return "", fmt.Errorf("can not convert to local order, order type %s not supported", orderType)
 }
 
-func toGlobalFuturesOrders(futuresOrders []*futures.Order) (orders []types.Order, err error) {
+func toGlobalFuturesOrders(futuresOrders []*futures.Order, isIsolated bool) (orders []types.Order, err error) {
 	for _, futuresOrder := range futuresOrders {
-		order, err := toGlobalFuturesOrder(futuresOrder, false)
+		order, err := toGlobalFuturesOrder(futuresOrder, isIsolated)
 		if err != nil {
 			return orders, err
 		}
@@ -107,7 +112,7 @@ func toGlobalFuturesOrders(futuresOrders []*futures.Order) (orders []types.Order
 	return orders, err
 }
 
-func toGlobalFuturesOrder(futuresOrder *futures.Order, isMargin bool) (*types.Order, error) {
+func toGlobalFuturesOrder(futuresOrder *futures.Order, isIsolated bool) (*types.Order, error) {
 	return &types.Order{
 		SubmitOrder: types.SubmitOrder{
 			ClientOrderID: futuresOrder.ClientOrderID,
@@ -126,7 +131,7 @@ func toGlobalFuturesOrder(futuresOrder *futures.Order, isMargin bool) (*types.Or
 		ExecutedQuantity: fixedpoint.MustNewFromString(futuresOrder.ExecutedQuantity),
 		CreationTime:     types.Time(millisecondTime(futuresOrder.Time)),
 		UpdateTime:       types.Time(millisecondTime(futuresOrder.UpdateTime)),
-		IsMargin:         isMargin,
+		IsFutures: true,
 	}, nil
 }
 

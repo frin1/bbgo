@@ -15,7 +15,7 @@ OSX_APP_CODESIGN_IDENTITY ?=
 # OSX_APP_GUI ?= lorca
 OSX_APP_GUI ?= webview
 
-FRONTEND_EXPORT_DIR = frontend/out
+FRONTEND_EXPORT_DIR = apps/frontend/out
 
 BACKTEST_REPORT_APP_DIR = apps/backtest-report
 BACKTEST_REPORT_EXPORT_DIR = apps/backtest-report/out
@@ -190,6 +190,7 @@ pkg/version/version.go: .FORCE
 
 pkg/version/dev.go: .FORCE
 	BUILD_FLAGS="!release" VERSION_SUFFIX="-dev" bash utils/generate-version-file.sh > $@
+	gofmt -s -w $@
 
 dev-version: pkg/version/dev.go
 	git add $<
@@ -223,13 +224,13 @@ docker-push:
 	docker push yoanlin/bbgo
 	bash -c "[[ -n $(DOCKER_TAG) ]] && docker push yoanlin/bbgo:$(DOCKER_TAG)"
 
-frontend/node_modules:
-	cd frontend && yarn install
+apps/frontend/node_modules:
+	cd apps/frontend && yarn install
 
-frontend/out/index.html: frontend/node_modules
-	cd frontend && yarn export
+apps/frontend/out/index.html: apps/frontend/node_modules
+	cd apps/frontend && yarn export
 
-pkg/server/assets.go: frontend/out/index.html
+pkg/server/assets.go: apps/frontend/out/index.html
 	go run ./utils/embed -package server -tag web -output $@ $(FRONTEND_EXPORT_DIR)
 
 $(BACKTEST_REPORT_APP_DIR)/node_modules:
@@ -243,7 +244,7 @@ pkg/backtest/assets.go: $(BACKTEST_REPORT_APP_DIR)/out/index.html
 
 embed: pkg/server/assets.go pkg/backtest/assets.go
 
-static: frontend/out/index.html pkg/server/assets.go pkg/backtest/assets.go
+static: apps/frontend/out/index.html pkg/server/assets.go pkg/backtest/assets.go
 
 PROTOS := \
 	$(wildcard pkg/pb/*.proto)
@@ -271,6 +272,6 @@ grpc-py:
 		$(PWD)/pkg/pb/bbgo.proto
 
 clean:
-	rm -rf $(BUILD_DIR) $(DIST_DIR) $(FRONTEND_EXPORT_DIR) $(GRPC_GO_DEPS) pkg/pb/*.pb.go
+	rm -rf $(BUILD_DIR) $(DIST_DIR) $(FRONTEND_EXPORT_DIR) $(GRPC_GO_DEPS) pkg/pb/*.pb.go coverage.txt
 
 .PHONY: bbgo bbgo-slim-darwin bbgo-slim-darwin-amd64 bbgo-slim-darwin-arm64 bbgo-darwin version dist pack migrations static embed desktop grpc grpc-go grpc-py .FORCE

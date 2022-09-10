@@ -11,6 +11,12 @@ import (
 
 const enableMarketTradeStop = false
 
+// ProtectiveStopLoss provides a way to protect your profit but also keep a room for the price volatility
+// Set ActivationRatio to 1% means if the price is away from your average cost by 1%, we will activate the protective stop loss
+// and the StopLossRatio is the minimal profit ratio you want to keep for your position.
+// If you set StopLossRatio to 0.1% and ActivationRatio to 1%,
+// when the price goes away from your average cost by 1% and then goes back to below your (average_cost * (1 - 0.1%))
+// The stop will trigger.
 type ProtectiveStopLoss struct {
 	Symbol string `json:"symbol"`
 
@@ -31,8 +37,6 @@ type ProtectiveStopLoss struct {
 	stopLossPrice fixedpoint.Value
 	stopLossOrder *types.Order
 }
-
-var one = fixedpoint.One
 
 func (s *ProtectiveStopLoss) Subscribe(session *ExchangeSession) {
 	// use 1m kline to handle roi stop
@@ -79,12 +83,18 @@ func (s *ProtectiveStopLoss) placeStopOrder(ctx context.Context, position *types
 	return err
 }
 
-func (s *ProtectiveStopLoss) shouldStop(closePrice fixedpoint.Value) bool {
+func (s *ProtectiveStopLoss) shouldStop(closePrice fixedpoint.Value, position *types.Position) bool {
 	if s.stopLossPrice.IsZero() {
 		return false
 	}
 
-	return closePrice.Compare(s.stopLossPrice) >= 0
+	if position.IsShort() {
+		return closePrice.Compare(s.stopLossPrice) >= 0
+	} else if position.IsLong() {
+		return closePrice.Compare(s.stopLossPrice) <= 0
+	}
+
+	return false
 }
 
 func (s *ProtectiveStopLoss) Bind(session *ExchangeSession, orderExecutor *GeneralOrderExecutor) {
@@ -119,8 +129,10 @@ func (s *ProtectiveStopLoss) Bind(session *ExchangeSession, orderExecutor *Gener
 		}
 
 		isPositionOpened := !position.IsClosed() && !position.IsDust(kline.Close)
-		if isPositionOpened && position.IsShort() {
+		if isPositionOpened {
 			s.handleChange(context.Background(), position, kline.Close, s.orderExecutor)
+		} else {
+			s.stopLossPrice = fixedpoint.Zero
 		}
 	})
 
@@ -161,7 +173,7 @@ func (s *ProtectiveStopLoss) handleChange(ctx context.Context, position *types.P
 				s.stopLossPrice = position.AverageCost.Mul(one.Add(s.StopLossRatio))
 			}
 
-			log.Infof("[ProtectiveStopLoss] %s protection stop loss activated, current price = %f, average cost = %f, stop loss price = %f",
+			Notify("[ProtectiveStopLoss] %s protection stop loss activated, current price = %f, average cost = %f, stop loss price = %f",
 				position.Symbol, closePrice.Float64(), position.AverageCost.Float64(), s.stopLossPrice.Float64())
 
 			if s.PlaceStopOrder {
@@ -185,8 +197,8 @@ func (s *ProtectiveStopLoss) checkStopPrice(closePrice fixedpoint.Value, positio
 		return
 	}
 
-	if s.shouldStop(closePrice) {
-		log.Infof("[ProtectiveStopLoss] protection stop order is triggered at price %f, position = %+v", closePrice.Float64(), position)
+	if s.shouldStop(closePrice, position) {
+		Notify("[ProtectiveStopLoss] protection stop order is triggered at price %f", closePrice.Float64(), position)
 		if err := s.orderExecutor.ClosePosition(context.Background(), one, "protectiveStopLoss"); err != nil {
 			log.WithError(err).Errorf("failed to close position")
 		}

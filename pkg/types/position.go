@@ -8,7 +8,7 @@ import (
 	"github.com/slack-go/slack"
 
 	"github.com/c9s/bbgo/pkg/fixedpoint"
-	"github.com/c9s/bbgo/pkg/util"
+	"github.com/c9s/bbgo/pkg/util/templateutil"
 )
 
 type PositionType string
@@ -59,6 +59,9 @@ type Position struct {
 	AccumulatedProfit fixedpoint.Value `json:"accumulatedProfit,omitempty" db:"accumulated_profit"`
 
 	sync.Mutex
+
+	// Modify position callbacks
+	modifyCallbacks []func(baseQty fixedpoint.Value, quoteQty fixedpoint.Value, price fixedpoint.Value)
 }
 
 func (p *Position) CsvHeader() []string {
@@ -101,8 +104,11 @@ func (p *Position) NewProfit(trade Trade, profit, netProfit fixedpoint.Value) Pr
 		NetProfit:       netProfit,
 		ProfitMargin:    profit.Div(trade.QuoteQuantity),
 		NetProfitMargin: netProfit.Div(trade.QuoteQuantity),
+
 		// trade related fields
+		Trade:         &trade,
 		TradeID:       trade.ID,
+		OrderID:       trade.OrderID,
 		Side:          trade.Side,
 		IsBuyer:       trade.IsBuyer,
 		IsMaker:       trade.IsMaker,
@@ -195,6 +201,43 @@ func (p *Position) UnrealizedProfit(price fixedpoint.Value) fixedpoint.Value {
 	return fixedpoint.Zero
 }
 
+func (p *Position) OnModify(cb func(baseQty fixedpoint.Value, quoteQty fixedpoint.Value, price fixedpoint.Value)) {
+	p.modifyCallbacks = append(p.modifyCallbacks, cb)
+}
+
+func (p *Position) EmitModify(baseQty fixedpoint.Value, quoteQty fixedpoint.Value, price fixedpoint.Value) {
+	for _, cb := range p.modifyCallbacks {
+		cb(baseQty, quoteQty, price)
+	}
+}
+
+// ModifyBase modifies position base quantity with `qty`
+func (p *Position) ModifyBase(qty fixedpoint.Value) error {
+	p.Base = qty
+
+	p.EmitModify(p.Base, p.Quote, p.AverageCost)
+
+	return nil
+}
+
+// ModifyQuote modifies position quote quantity with `qty`
+func (p *Position) ModifyQuote(qty fixedpoint.Value) error {
+	p.Quote = qty
+
+	p.EmitModify(p.Base, p.Quote, p.AverageCost)
+
+	return nil
+}
+
+// ModifyAverageCost modifies position average cost with `price`
+func (p *Position) ModifyAverageCost(price fixedpoint.Value) error {
+	p.AverageCost = price
+
+	p.EmitModify(p.Base, p.Quote, p.AverageCost)
+
+	return nil
+}
+
 type FuturesPosition struct {
 	Symbol        string `json:"symbol"`
 	BaseCurrency  string `json:"baseCurrency"`
@@ -217,8 +260,6 @@ type FuturesPosition struct {
 	Isolated     bool  `json:"isolated"`
 	UpdateTime   int64 `json:"updateTime"`
 	PositionRisk *PositionRisk
-
-	sync.Mutex
 }
 
 func NewPositionFromMarket(market Market) *Position {
@@ -314,7 +355,7 @@ func (p *Position) SlackAttachment() slack.Attachment {
 		color = "#DC143C"
 	}
 
-	title := util.Render(string(posType)+` Position {{ .Symbol }} `, p)
+	title := templateutil.Render(string(posType)+` Position {{ .Symbol }} `, p)
 
 	fields := []slack.AttachmentField{
 		{Title: "Average Cost", Value: averageCost.String() + " " + p.QuoteCurrency, Short: true},
@@ -340,7 +381,7 @@ func (p *Position) SlackAttachment() slack.Attachment {
 		Title:  title,
 		Color:  color,
 		Fields: fields,
-		Footer: util.Render("update time {{ . }}", time.Now().Format(time.RFC822)),
+		Footer: templateutil.Render("update time {{ . }}", time.Now().Format(time.RFC822)),
 		// FooterIcon: "",
 	}
 }

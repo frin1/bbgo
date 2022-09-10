@@ -84,14 +84,14 @@ func toGlobalFuturesMarket(symbol futures.Symbol) types.Market {
 	return market
 }
 
-//func toGlobalIsolatedMarginAccount(account *binance.IsolatedMarginAccount) *types.IsolatedMarginAccount {
+// func toGlobalIsolatedMarginAccount(account *binance.IsolatedMarginAccount) *types.IsolatedMarginAccount {
 //	return &types.IsolatedMarginAccount{
 //		TotalAssetOfBTC:     fixedpoint.MustNewFromString(account.TotalNetAssetOfBTC),
 //		TotalLiabilityOfBTC: fixedpoint.MustNewFromString(account.TotalLiabilityOfBTC),
 //		TotalNetAssetOfBTC:  fixedpoint.MustNewFromString(account.TotalNetAssetOfBTC),
 //		Assets:              toGlobalIsolatedMarginAssets(account.Assets),
 //	}
-//}
+// }
 
 func toGlobalTicker(stats *binance.PriceChangeStats) (*types.Ticker, error) {
 	return &types.Ticker{
@@ -141,9 +141,9 @@ func toLocalOrderType(orderType types.OrderType) (binance.OrderType, error) {
 	return "", fmt.Errorf("can not convert to local order, order type %s not supported", orderType)
 }
 
-func toGlobalOrders(binanceOrders []*binance.Order) (orders []types.Order, err error) {
+func toGlobalOrders(binanceOrders []*binance.Order, isMargin bool) (orders []types.Order, err error) {
 	for _, binanceOrder := range binanceOrders {
-		order, err := toGlobalOrder(binanceOrder, false)
+		order, err := toGlobalOrder(binanceOrder, isMargin)
 		if err != nil {
 			return orders, err
 		}
@@ -278,7 +278,7 @@ func toGlobalOrderStatus(orderStatus binance.OrderStatusType) types.OrderStatus 
 	case binance.OrderStatusTypeRejected:
 		return types.OrderStatusRejected
 
-	case binance.OrderStatusTypeCanceled:
+	case binance.OrderStatusTypeCanceled, binance.OrderStatusTypeExpired, binance.OrderStatusTypePendingCancel:
 		return types.OrderStatusCanceled
 
 	case binance.OrderStatusTypePartiallyFilled:

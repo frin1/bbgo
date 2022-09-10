@@ -300,7 +300,6 @@ var submitOrderCmd = &cobra.Command{
 		"session",
 		"symbol",
 		"side",
-		"price",
 		"quantity",
 	}),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -329,7 +328,17 @@ var submitOrderCmd = &cobra.Command{
 			return fmt.Errorf("can not get price: %w", err)
 		}
 
+		asMarketOrder, err := cmd.Flags().GetBool("market")
+		if err != nil {
+			return err
+		}
+
 		quantity, err := cmd.Flags().GetString("quantity")
+		if err != nil {
+			return fmt.Errorf("can not get quantity: %w", err)
+		}
+
+		marginOrderSideEffect, err := cmd.Flags().GetString("margin-side-effect")
 		if err != nil {
 			return fmt.Errorf("can not get quantity: %w", err)
 		}
@@ -354,21 +363,33 @@ var submitOrderCmd = &cobra.Command{
 		}
 
 		so := types.SubmitOrder{
-			Symbol:      symbol,
-			Side:        types.SideType(strings.ToUpper(side)),
-			Type:        types.OrderTypeLimit,
-			Quantity:    fixedpoint.MustNewFromString(quantity),
-			Price:       fixedpoint.MustNewFromString(price),
-			Market:      market,
-			TimeInForce: "GTC",
+			Symbol:           symbol,
+			Side:             types.SideType(strings.ToUpper(side)),
+			Type:             types.OrderTypeLimit,
+			Quantity:         fixedpoint.MustNewFromString(quantity),
+			Market:           market,
+			MarginSideEffect: types.MarginOrderSideEffectType(marginOrderSideEffect),
 		}
 
-		co, err := session.Exchange.SubmitOrders(ctx, so)
+		if asMarketOrder {
+			so.Type = types.OrderTypeMarket
+			so.Price = fixedpoint.Zero
+		} else {
+			if len(price) == 0 {
+				return fmt.Errorf("price is required for limit order submission")
+			}
+
+			so.Type = types.OrderTypeLimit
+			so.Price = fixedpoint.MustNewFromString(price)
+			so.TimeInForce = types.TimeInForceGTC
+		}
+
+		co, err := session.Exchange.SubmitOrder(ctx, so)
 		if err != nil {
 			return err
 		}
 
-		log.Infof("submitted order: %+v\ncreated order: %+v", so, co[0])
+		log.Infof("submitted order: %+v\ncreated order: %+v", so, co)
 		return nil
 	},
 }
@@ -386,6 +407,8 @@ func init() {
 	submitOrderCmd.Flags().String("side", "", "the trading side: buy or sell")
 	submitOrderCmd.Flags().String("price", "", "the trading price")
 	submitOrderCmd.Flags().String("quantity", "", "the trading quantity")
+	submitOrderCmd.Flags().Bool("market", false, "submit order as a market order")
+	submitOrderCmd.Flags().String("margin-side-effect", "", "margin order side effect")
 
 	executeOrderCmd.Flags().String("session", "", "the exchange session name for sync")
 	executeOrderCmd.Flags().String("symbol", "", "the trading pair, like btcusdt")

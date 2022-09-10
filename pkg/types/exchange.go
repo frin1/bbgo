@@ -88,6 +88,7 @@ type Exchange interface {
 // ExchangeOrderQueryService provides an interface for querying the order status via order ID or client order ID
 type ExchangeOrderQueryService interface {
 	QueryOrder(ctx context.Context, q OrderQuery) (*Order, error)
+	QueryOrderTrades(ctx context.Context, q OrderQuery) ([]Trade, error)
 }
 
 type ExchangeTradeService interface {
@@ -95,7 +96,7 @@ type ExchangeTradeService interface {
 
 	QueryAccountBalances(ctx context.Context) (BalanceMap, error)
 
-	SubmitOrders(ctx context.Context, orders ...SubmitOrder) (createdOrders OrderSlice, err error)
+	SubmitOrder(ctx context.Context, order SubmitOrder) (createdOrder *Order, err error)
 
 	QueryOpenOrders(ctx context.Context, symbol string) (orders []Order, err error)
 
@@ -104,6 +105,10 @@ type ExchangeTradeService interface {
 
 type ExchangeDefaultFeeRates interface {
 	DefaultFeeRates() ExchangeFee
+}
+
+type ExchangeAmountFeeProtect interface {
+	SetModifyOrderAmountForFee(ExchangeFee)
 }
 
 type ExchangeTradeHistoryService interface {

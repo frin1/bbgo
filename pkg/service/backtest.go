@@ -37,12 +37,26 @@ func (s *BacktestService) SyncKLineByInterval(ctx context.Context, exchange type
 		_, _ = s.DB.Exec("PRAGMA synchronous = NORMAL")
 	}
 
+	now := time.Now()
 	tasks := []SyncTask{
 		{
 			Type:   types.KLine{},
 			Select: SelectLastKLines(exchange.Name(), symbol, interval, startTime, endTime, 100),
 			Time: func(obj interface{}) time.Time {
 				return obj.(types.KLine).StartTime.Time()
+			},
+			Filter: func(obj interface{}) bool {
+				k := obj.(types.KLine)
+				if k.EndTime.Before(k.StartTime.Time().Add(k.Interval.Duration() - time.Second)) {
+					return false
+				}
+
+				// Filter klines that has the endTime closed in the future
+				if k.EndTime.After(now) {
+					return false
+				}
+
+				return true
 			},
 			ID: func(obj interface{}) string {
 				kline := obj.(types.KLine)
@@ -196,10 +210,12 @@ func (s *BacktestService) QueryKLinesCh(since, until time.Time, exchange types.E
 	tableName := targetKlineTable(exchange.Name())
 	var query string
 
+	// need to sort by start_time desc in order to let matching engine process 1m first
+	// otherwise any other close event could peek on the final close price
 	if len(symbols) == 1 {
-		query = "SELECT * FROM `binance_klines` WHERE `end_time` BETWEEN :since AND :until AND `symbol` = :symbols AND `interval` IN (:intervals) ORDER BY end_time ASC"
+		query = "SELECT * FROM `binance_klines` WHERE `end_time` BETWEEN :since AND :until AND `symbol` = :symbols AND `interval` IN (:intervals) ORDER BY end_time ASC, start_time DESC"
 	} else {
-		query = "SELECT * FROM `binance_klines` WHERE `end_time` BETWEEN :since AND :until AND `symbol` IN (:symbols) AND `interval` IN (:intervals) ORDER BY end_time ASC"
+		query = "SELECT * FROM `binance_klines` WHERE `end_time` BETWEEN :since AND :until AND `symbol` IN (:symbols) AND `interval` IN (:intervals) ORDER BY end_time ASC, start_time DESC"
 	}
 
 	query = strings.ReplaceAll(query, "binance_klines", tableName)

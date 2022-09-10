@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/adshao/go-binance/v2"
+
 	"github.com/adshao/go-binance/v2/futures"
 	"github.com/spf13/viper"
 
@@ -16,7 +18,6 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/adshao/go-binance/v2"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -373,7 +374,7 @@ func (e *Exchange) transferCrossMarginAccountAsset(ctx context.Context, asset st
 	return err
 }
 
-func (e *Exchange) queryCrossMarginAccount(ctx context.Context) (*types.Account, error) {
+func (e *Exchange) QueryCrossMarginAccount(ctx context.Context) (*types.Account, error) {
 	marginAccount, err := e.client.NewGetMarginAccountService().Do(ctx)
 	if err != nil {
 		return nil, err
@@ -405,7 +406,7 @@ func (e *Exchange) queryCrossMarginAccount(ctx context.Context) (*types.Account,
 	return a, nil
 }
 
-func (e *Exchange) queryIsolatedMarginAccount(ctx context.Context) (*types.Account, error) {
+func (e *Exchange) QueryIsolatedMarginAccount(ctx context.Context) (*types.Account, error) {
 	req := e.client.NewGetIsolatedMarginAccountService()
 	req.Symbols(e.IsolatedMarginSymbol)
 
@@ -634,6 +635,9 @@ func (e *Exchange) QuerySpotAccount(ctx context.Context) (*types.Account, error)
 	return a, nil
 }
 
+// QueryFuturesAccount gets the futures account balances from Binance
+// Balance.Available = Wallet Balance(in Binance UI) - Used Margin
+// Balance.Locked = Used Margin
 func (e *Exchange) QueryFuturesAccount(ctx context.Context) (*types.Account, error) {
 	account, err := e.futuresClient.NewGetAccountService().Do(ctx)
 	if err != nil {
@@ -646,9 +650,13 @@ func (e *Exchange) QueryFuturesAccount(ctx context.Context) (*types.Account, err
 
 	var balances = map[string]types.Balance{}
 	for _, b := range accountBalances {
+		balanceAvailable := fixedpoint.Must(fixedpoint.NewFromString(b.AvailableBalance))
+		balanceTotal := fixedpoint.Must(fixedpoint.NewFromString(b.Balance))
+		unrealizedPnl := fixedpoint.Must(fixedpoint.NewFromString(b.CrossUnPnl))
 		balances[b.Asset] = types.Balance{
 			Currency:  b.Asset,
-			Available: fixedpoint.Must(fixedpoint.NewFromString(b.AvailableBalance)),
+			Available: balanceAvailable,
+			Locked:    balanceTotal.Sub(balanceAvailable.Sub(unrealizedPnl)),
 		}
 	}
 
@@ -669,9 +677,9 @@ func (e *Exchange) QueryAccount(ctx context.Context) (*types.Account, error) {
 	if e.IsFutures {
 		account, err = e.QueryFuturesAccount(ctx)
 	} else if e.IsIsolatedMargin {
-		account, err = e.queryIsolatedMarginAccount(ctx)
+		account, err = e.QueryIsolatedMarginAccount(ctx)
 	} else if e.IsMargin {
-		account, err = e.queryCrossMarginAccount(ctx)
+		account, err = e.QueryCrossMarginAccount(ctx)
 	} else {
 		account, err = e.QuerySpotAccount(ctx)
 	}
@@ -689,7 +697,7 @@ func (e *Exchange) QueryOpenOrders(ctx context.Context, symbol string) (orders [
 			return orders, err
 		}
 
-		return toGlobalOrders(binanceOrders)
+		return toGlobalOrders(binanceOrders, false)
 	}
 
 	if e.IsFutures {
@@ -700,7 +708,7 @@ func (e *Exchange) QueryOpenOrders(ctx context.Context, symbol string) (orders [
 			return orders, err
 		}
 
-		return toGlobalFuturesOrders(binanceOrders)
+		return toGlobalFuturesOrders(binanceOrders, false)
 	}
 
 	binanceOrders, err := e.client.NewListOpenOrdersService().Symbol(symbol).Do(ctx)
@@ -708,7 +716,37 @@ func (e *Exchange) QueryOpenOrders(ctx context.Context, symbol string) (orders [
 		return orders, err
 	}
 
-	return toGlobalOrders(binanceOrders)
+	return toGlobalOrders(binanceOrders, false)
+}
+
+func (e *Exchange) QueryOrderTrades(ctx context.Context, q types.OrderQuery) ([]types.Trade, error) {
+	orderID, err := strconv.ParseInt(q.OrderID, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(q.Symbol) == 0 {
+		return nil, errors.New("binance: symbol parameter is a mandatory parameter for querying order trades")
+	}
+
+	remoteTrades, err := e.client.NewListTradesService().Symbol(q.Symbol).OrderId(orderID).Do(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var trades []types.Trade
+	for _, t := range remoteTrades {
+		localTrade, err := toGlobalTrade(*t, e.IsMargin)
+		if err != nil {
+			log.WithError(err).Errorf("binance: can not convert trade: %+v", t)
+			continue
+		}
+
+		trades = append(trades, *localTrade)
+	}
+
+	trades = types.SortTradesAscending(trades)
+	return trades, nil
 }
 
 func (e *Exchange) QueryOrder(ctx context.Context, q types.OrderQuery) (*types.Order, error) {
@@ -765,7 +803,7 @@ func (e *Exchange) QueryClosedOrders(ctx context.Context, symbol string, since, 
 			return orders, err
 		}
 
-		return toGlobalOrders(binanceOrders)
+		return toGlobalOrders(binanceOrders, e.IsMargin)
 	}
 
 	if e.IsFutures {
@@ -784,7 +822,7 @@ func (e *Exchange) QueryClosedOrders(ctx context.Context, symbol string, since, 
 		if err != nil {
 			return orders, err
 		}
-		return toGlobalFuturesOrders(binanceOrders)
+		return toGlobalFuturesOrders(binanceOrders, false)
 	}
 
 	// If orderId is set, it will get orders >= that orderId. Otherwise most recent orders are returned.
@@ -810,7 +848,7 @@ func (e *Exchange) QueryClosedOrders(ctx context.Context, symbol string, since, 
 		return orders, err
 	}
 
-	return toGlobalOrders(binanceOrders)
+	return toGlobalOrders(binanceOrders, e.IsMargin)
 }
 
 func (e *Exchange) CancelOrders(ctx context.Context, orders ...types.Order) (err error) {
@@ -1041,7 +1079,7 @@ func (e *Exchange) submitFuturesOrder(ctx context.Context, order types.SubmitOrd
 		req.TimeInForce(futures.TimeInForceType(order.TimeInForce))
 	} else {
 		switch order.Type {
-		case types.OrderTypeLimit, types.OrderTypeStopLimit:
+		case types.OrderTypeLimit, types.OrderTypeLimitMaker, types.OrderTypeStopLimit:
 			req.TimeInForce(futures.TimeInForceTypeGTC)
 		}
 	}
@@ -1065,7 +1103,7 @@ func (e *Exchange) submitFuturesOrder(ctx context.Context, order types.SubmitOrd
 		Type:             response.Type,
 		Side:             response.Side,
 		ReduceOnly:       response.ReduceOnly,
-	}, true)
+	}, false)
 
 	return createdOrder, err
 }
@@ -1213,33 +1251,20 @@ func (e *Exchange) submitSpotOrder(ctx context.Context, order types.SubmitOrder)
 	return createdOrder, err
 }
 
-func (e *Exchange) SubmitOrders(ctx context.Context, orders ...types.SubmitOrder) (createdOrders types.OrderSlice, err error) {
-	for _, order := range orders {
-		if err := orderLimiter.Wait(ctx); err != nil {
-			log.WithError(err).Errorf("order rate limiter wait error")
-		}
-
-		var createdOrder *types.Order
-		if e.IsMargin {
-			createdOrder, err = e.submitMarginOrder(ctx, order)
-		} else if e.IsFutures {
-			createdOrder, err = e.submitFuturesOrder(ctx, order)
-		} else {
-			createdOrder, err = e.submitSpotOrder(ctx, order)
-		}
-
-		if err != nil {
-			return createdOrders, err
-		}
-
-		if createdOrder == nil {
-			return createdOrders, errors.New("nil converted order")
-		}
-
-		createdOrders = append(createdOrders, *createdOrder)
+func (e *Exchange) SubmitOrder(ctx context.Context, order types.SubmitOrder) (createdOrder *types.Order, err error) {
+	if err := orderLimiter.Wait(ctx); err != nil {
+		log.WithError(err).Errorf("order rate limiter wait error")
 	}
 
-	return createdOrders, err
+	if e.IsMargin {
+		createdOrder, err = e.submitMarginOrder(ctx, order)
+	} else if e.IsFutures {
+		createdOrder, err = e.submitFuturesOrder(ctx, order)
+	} else {
+		createdOrder, err = e.submitSpotOrder(ctx, order)
+	}
+
+	return createdOrder, err
 }
 
 // QueryKLines queries the Kline/candlestick bars for a symbol. Klines are uniquely identified by their open time.

@@ -47,8 +47,6 @@ type BollingerSetting struct {
 }
 
 type Strategy struct {
-	*bbgo.Persistence
-
 	Environment          *bbgo.Environment
 	StandardIndicatorSet *bbgo.StandardIndicatorSet
 	Market               types.Market
@@ -431,13 +429,21 @@ func (s *Strategy) hasShortSet() bool {
 }
 
 func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, session *bbgo.ExchangeSession) error {
+	// initial required information
+	s.session = session
+
 	// StrategyController
 	s.Status = types.StrategyStatusRunning
 
+	s.neutralBoll = s.StandardIndicatorSet.BOLL(s.NeutralBollinger.IntervalWindow, s.NeutralBollinger.BandWidth)
+	s.defaultBoll = s.StandardIndicatorSet.BOLL(s.DefaultBollinger.IntervalWindow, s.DefaultBollinger.BandWidth)
+
 	// Setup dynamic spread
-	if s.DynamicSpread.Enabled {
-		s.DynamicSpread.DynamicBidSpread = &indicator.SMA{IntervalWindow: types.IntervalWindow{s.Interval, s.DynamicSpread.Window}}
-		s.DynamicSpread.DynamicAskSpread = &indicator.SMA{IntervalWindow: types.IntervalWindow{s.Interval, s.DynamicSpread.Window}}
+	if s.DynamicSpread.IsEnabled() {
+		if s.DynamicSpread.Interval == "" {
+			s.DynamicSpread.Interval = s.Interval
+		}
+		s.DynamicSpread.Initialize(s.Symbol, s.session, s.neutralBoll, s.defaultBoll)
 	}
 
 	if s.DisableShort {
@@ -459,12 +465,6 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 	if s.ShadowProtectionRatio.IsZero() {
 		s.ShadowProtectionRatio = fixedpoint.NewFromFloat(0.01)
 	}
-
-	// initial required information
-	s.session = session
-
-	s.neutralBoll = s.StandardIndicatorSet.BOLL(s.NeutralBollinger.IntervalWindow, s.NeutralBollinger.BandWidth)
-	s.defaultBoll = s.StandardIndicatorSet.BOLL(s.DefaultBollinger.IntervalWindow, s.DefaultBollinger.BandWidth)
 
 	// calculate group id for orders
 	instanceID := s.InstanceID()
@@ -538,7 +538,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 		}
 
 		// Update spreads with dynamic spread
-		if s.DynamicSpread.Enabled {
+		if s.DynamicSpread.IsEnabled() {
 			s.DynamicSpread.Update(kline)
 			dynamicBidSpread, err := s.DynamicSpread.GetBidSpread()
 			if err == nil && dynamicBidSpread > 0 {

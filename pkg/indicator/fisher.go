@@ -3,6 +3,7 @@ package indicator
 import (
 	"math"
 
+	"github.com/c9s/bbgo/pkg/datatype/floats"
 	"github.com/c9s/bbgo/pkg/types"
 )
 
@@ -11,7 +12,7 @@ type FisherTransform struct {
 	types.SeriesBase
 	types.IntervalWindow
 	prices *types.Queue
-	Values types.Float64Slice
+	Values floats.Slice
 
 	UpdateCallbacks []func(value float64)
 }
@@ -34,6 +35,10 @@ func (inc *FisherTransform) Update(value float64) {
 	inc.prices.Update(value)
 	highest := inc.prices.Highest(inc.Window)
 	lowest := inc.prices.Lowest(inc.Window)
+	if highest == lowest {
+		inc.Values.Update(0)
+		return
+	}
 	x := 2*((value-lowest)/(highest-lowest)) - 1
 	if x == 1 {
 		x = 0.9999

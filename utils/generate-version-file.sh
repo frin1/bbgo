@@ -18,6 +18,7 @@ if [[ -n $VERSION_SUFFIX ]] ; then
 fi
 
 cat <<END
+//go:build $BUILD_FLAGS
 // +build $BUILD_FLAGS
 
 package $PACKAGE_NAME
@@ -25,5 +26,4 @@ package $PACKAGE_NAME
 const Version = "${VERSION}"
 
 const VersionGitRef = "${REF}"
-
 END

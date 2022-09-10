@@ -7,6 +7,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
+	"github.com/c9s/bbgo/pkg/datatype/floats"
 	"github.com/c9s/bbgo/pkg/types"
 )
 
@@ -19,7 +20,7 @@ const MaxNumOfVOLTruncateSize = 100
 type Volatility struct {
 	types.SeriesBase
 	types.IntervalWindow
-	Values  types.Float64Slice
+	Values  floats.Slice
 	EndTime time.Time
 
 	UpdateCallbacks []func(value float64)
@@ -91,7 +92,7 @@ func (inc *Volatility) Bind(updater KLineWindowUpdater) {
 	updater.OnKLineWindowUpdate(inc.handleKLineWindowUpdate)
 }
 
-func calculateVOLATILITY(klines []types.KLine, window int, priceF KLinePriceMapper) (float64, error) {
+func calculateVOLATILITY(klines []types.KLine, window int, priceF KLineValueMapper) (float64, error) {
 	length := len(klines)
 	if length == 0 || length < window {
 		return 0.0, fmt.Errorf("insufficient elements for calculating VOL with window = %d", window)

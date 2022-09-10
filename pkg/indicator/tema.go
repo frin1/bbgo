@@ -1,6 +1,7 @@
 package indicator
 
 import (
+	"github.com/c9s/bbgo/pkg/datatype/floats"
 	"github.com/c9s/bbgo/pkg/types"
 )
 
@@ -11,7 +12,7 @@ import (
 type TEMA struct {
 	types.SeriesBase
 	types.IntervalWindow
-	Values types.Float64Slice
+	Values floats.Slice
 	A1     *EWMA
 	A2     *EWMA
 	A3     *EWMA
@@ -22,9 +23,9 @@ type TEMA struct {
 func (inc *TEMA) Update(value float64) {
 	if len(inc.Values) == 0 {
 		inc.SeriesBase.Series = inc
-		inc.A1 = &EWMA{IntervalWindow: types.IntervalWindow{inc.Interval, inc.Window}}
-		inc.A2 = &EWMA{IntervalWindow: types.IntervalWindow{inc.Interval, inc.Window}}
-		inc.A3 = &EWMA{IntervalWindow: types.IntervalWindow{inc.Interval, inc.Window}}
+		inc.A1 = &EWMA{IntervalWindow: inc.IntervalWindow}
+		inc.A2 = &EWMA{IntervalWindow: inc.IntervalWindow}
+		inc.A3 = &EWMA{IntervalWindow: inc.IntervalWindow}
 	}
 	inc.A1.Update(value)
 	a1 := inc.A1.Last()

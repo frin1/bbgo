@@ -37,9 +37,10 @@ var marketDataLimiter = rate.NewLimiter(rate.Every(500*time.Millisecond), 2)
 type Exchange struct {
 	client *ftxapi.RestClient
 
-	key, secret  string
-	subAccount   string
-	restEndpoint *url.URL
+	key, secret             string
+	subAccount              string
+	restEndpoint            *url.URL
+	orderAmountReduceFactor fixedpoint.Value
 }
 
 type MarketTicker struct {
@@ -91,8 +92,9 @@ func NewExchange(key, secret string, subAccount string) *Exchange {
 		restEndpoint: u,
 		key:          key,
 		// pragma: allowlist nextline secret
-		secret:     secret,
-		subAccount: subAccount,
+		secret:                  secret,
+		subAccount:              subAccount,
+		orderAmountReduceFactor: fixedpoint.One,
 	}
 }
 
@@ -212,6 +214,22 @@ func (e *Exchange) QueryAccountBalances(ctx context.Context) (types.BalanceMap, 
 	return balances, nil
 }
 
+// DefaultFeeRates returns the FTX Tier 1 fee
+// See also https://help.ftx.com/hc/en-us/articles/360024479432-Fees
+func (e *Exchange) DefaultFeeRates() types.ExchangeFee {
+	return types.ExchangeFee{
+		MakerFeeRate: fixedpoint.NewFromFloat(0.01 * 0.020), // 0.020%
+		TakerFeeRate: fixedpoint.NewFromFloat(0.01 * 0.070), // 0.070%
+	}
+}
+
+// SetModifyOrderAmountForFee protects the limit buy orders by reducing amount with taker fee.
+// The amount is recalculated before submit: submit_amount = original_amount / (1 + taker_fee_rate) .
+// This prevents balance exceeding error while closing position without spot margin enabled.
+func (e *Exchange) SetModifyOrderAmountForFee(feeRate types.ExchangeFee) {
+	e.orderAmountReduceFactor = fixedpoint.One.Add(feeRate.TakerFeeRate)
+}
+
 // resolution field in api
 // window length in seconds. options: 15, 60, 300, 900, 3600, 14400, 86400, or any multiple of 86400 up to 30*86400
 var supportedIntervals = map[types.Interval]int{
@@ -272,7 +290,7 @@ func (e *Exchange) _queryKLines(ctx context.Context, symbol string, interval typ
 		}
 	}
 
-	resp, err := e.newRest().HistoricalPrices(ctx, toLocalSymbol(symbol), interval, int64(options.Limit), options.StartTime, options.EndTime)
+	resp, err := e.newRest().marketRequest.HistoricalPrices(ctx, toLocalSymbol(symbol), interval, int64(options.Limit), options.StartTime, options.EndTime)
 	if err != nil {
 		return nil, err
 	}
@@ -383,55 +401,54 @@ func (e *Exchange) QueryDepositHistory(ctx context.Context, asset string, since,
 	return
 }
 
-func (e *Exchange) SubmitOrders(ctx context.Context, orders ...types.SubmitOrder) (types.OrderSlice, error) {
-	var createdOrders types.OrderSlice
+func (e *Exchange) SubmitOrder(ctx context.Context, order types.SubmitOrder) (*types.Order, error) {
 	// TODO: currently only support limit and market order
 	// TODO: support time in force
-	for _, so := range orders {
-		if err := requestLimit.Wait(ctx); err != nil {
-			logrus.WithError(err).Error("rate limit error")
-		}
-
-		orderType, err := toLocalOrderType(so.Type)
-		if err != nil {
-			logrus.WithError(err).Error("type error")
-		}
-
-		req := e.client.NewPlaceOrderRequest()
-		req.Market(toLocalSymbol(TrimUpperString(so.Symbol)))
-		req.OrderType(orderType)
-		req.Side(ftxapi.Side(TrimLowerString(string(so.Side))))
-		req.Size(so.Quantity)
-
-		switch so.Type {
-		case types.OrderTypeLimit, types.OrderTypeLimitMaker:
-			req.Price(so.Price)
-
-		}
-
-		if so.Type == types.OrderTypeLimitMaker {
-			req.PostOnly(true)
-		}
-
-		if so.TimeInForce == types.TimeInForceIOC {
-			req.Ioc(true)
-		}
-
-		req.ClientID(newSpotClientOrderID(so.ClientOrderID))
-
-		or, err := req.Do(ctx)
-		if err != nil {
-			return createdOrders, fmt.Errorf("failed to place order %+v: %w", so, err)
-		}
-
-		globalOrder, err := toGlobalOrderNew(*or)
-		if err != nil {
-			return createdOrders, fmt.Errorf("failed to convert response to global order")
-		}
-
-		createdOrders = append(createdOrders, globalOrder)
+	so := order
+	if err := requestLimit.Wait(ctx); err != nil {
+		logrus.WithError(err).Error("rate limit error")
 	}
-	return createdOrders, nil
+
+	orderType, err := toLocalOrderType(so.Type)
+	if err != nil {
+		logrus.WithError(err).Error("type error")
+	}
+
+	submitQuantity := so.Quantity
+	switch orderType {
+	case ftxapi.OrderTypeLimit, ftxapi.OrderTypeStopLimit:
+		submitQuantity = so.Quantity.Div(e.orderAmountReduceFactor)
+	}
+
+	req := e.client.NewPlaceOrderRequest()
+	req.Market(toLocalSymbol(TrimUpperString(so.Symbol)))
+	req.OrderType(orderType)
+	req.Side(ftxapi.Side(TrimLowerString(string(so.Side))))
+	req.Size(submitQuantity)
+
+	switch so.Type {
+	case types.OrderTypeLimit, types.OrderTypeLimitMaker:
+		req.Price(so.Price)
+
+	}
+
+	if so.Type == types.OrderTypeLimitMaker {
+		req.PostOnly(true)
+	}
+
+	if so.TimeInForce == types.TimeInForceIOC {
+		req.Ioc(true)
+	}
+
+	req.ClientID(newSpotClientOrderID(so.ClientOrderID))
+
+	or, err := req.Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to place order %+v: %w", so, err)
+	}
+
+	globalOrder, err := toGlobalOrderNew(*or)
+	return &globalOrder, err
 }
 
 func (e *Exchange) QueryOrder(ctx context.Context, q types.OrderQuery) (*types.Order, error) {
@@ -446,8 +463,12 @@ func (e *Exchange) QueryOrder(ctx context.Context, q types.OrderQuery) (*types.O
 		return nil, err
 	}
 
-	order, err := toGlobalOrderNew(*ftxOrder)
-	return &order, err
+	o, err := toGlobalOrderNew(*ftxOrder)
+	if err != nil {
+		return nil, err
+	}
+
+	return &o, err
 }
 
 func (e *Exchange) QueryOpenOrders(ctx context.Context, symbol string) (orders []types.Order, err error) {
@@ -548,7 +569,6 @@ func (e *Exchange) QueryTicker(ctx context.Context, symbol string) (*types.Ticke
 }
 
 func (e *Exchange) QueryTickers(ctx context.Context, symbol ...string) (map[string]types.Ticker, error) {
-
 	var tickers = make(map[string]types.Ticker)
 
 	markets, err := e._queryMarkets(ctx)
@@ -562,7 +582,6 @@ func (e *Exchange) QueryTickers(ctx context.Context, symbol ...string) (map[stri
 	}
 
 	rest := e.newRest()
-
 	for k, v := range markets {
 
 		// if we provide symbol as condition then we only query the gieven symbol ,
@@ -579,7 +598,7 @@ func (e *Exchange) QueryTickers(ctx context.Context, symbol ...string) (map[stri
 		now := time.Now()
 		since := now.Add(time.Duration(-1) * time.Hour)
 		until := now
-		prices, err := rest.HistoricalPrices(ctx, v.Market.LocalSymbol, types.Interval1h, 1, &since, &until)
+		prices, err := rest.marketRequest.HistoricalPrices(ctx, v.Market.LocalSymbol, types.Interval1h, 1, &since, &until)
 		if err != nil || !prices.Success || len(prices.Result) == 0 {
 			continue
 		}

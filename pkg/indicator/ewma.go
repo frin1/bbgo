@@ -3,6 +3,7 @@ package indicator
 import (
 	"time"
 
+	"github.com/c9s/bbgo/pkg/datatype/floats"
 	"github.com/c9s/bbgo/pkg/types"
 )
 
@@ -15,7 +16,7 @@ type EWMA struct {
 	types.IntervalWindow
 	types.SeriesBase
 
-	Values  types.Float64Slice
+	Values  floats.Slice
 	EndTime time.Time
 
 	updateCallbacks []func(value float64)
@@ -83,7 +84,7 @@ func (inc *EWMA) PushK(k types.KLine) {
 	inc.EmitUpdate(inc.Last())
 }
 
-func CalculateKLinesEMA(allKLines []types.KLine, priceF KLinePriceMapper, window int) float64 {
+func CalculateKLinesEMA(allKLines []types.KLine, priceF KLineValueMapper, window int) float64 {
 	var multiplier = 2.0 / (float64(window) + 1)
 	return ewma(MapKLinePrice(allKLines, priceF), multiplier)
 }

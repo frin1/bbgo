@@ -11,7 +11,7 @@ import (
 	"github.com/slack-go/slack"
 
 	"github.com/c9s/bbgo/pkg/fixedpoint"
-	"github.com/c9s/bbgo/pkg/util"
+	"github.com/c9s/bbgo/pkg/util/templateutil"
 )
 
 func init() {
@@ -116,13 +116,13 @@ type SubmitOrder struct {
 	Side   SideType  `json:"side" db:"side"`
 	Type   OrderType `json:"orderType" db:"order_type"`
 
-	Quantity     fixedpoint.Value `json:"quantity" db:"quantity"`
-	Price        fixedpoint.Value `json:"price" db:"price"`
+	Quantity fixedpoint.Value `json:"quantity" db:"quantity"`
+	Price    fixedpoint.Value `json:"price" db:"price"`
 
 	// AveragePrice is only used in back-test currently
 	AveragePrice fixedpoint.Value `json:"averagePrice"`
 
-	StopPrice    fixedpoint.Value `json:"stopPrice,omitempty" db:"stop_price"`
+	StopPrice fixedpoint.Value `json:"stopPrice,omitempty" db:"stop_price"`
 
 	Market Market `json:"-" db:"-"`
 
@@ -132,12 +132,43 @@ type SubmitOrder struct {
 
 	MarginSideEffect MarginOrderSideEffectType `json:"marginSideEffect,omitempty"` // AUTO_REPAY = repay, MARGIN_BUY = borrow, defaults to  NO_SIDE_EFFECT
 
-	// futures order fields
-	IsFutures     bool `json:"is_futures" db:"is_futures"`
 	ReduceOnly    bool `json:"reduceOnly" db:"reduce_only"`
 	ClosePosition bool `json:"closePosition" db:"close_position"`
 
 	Tag string `json:"tag" db:"-"`
+}
+
+func (o *SubmitOrder) In() (fixedpoint.Value, string) {
+	switch o.Side {
+	case SideTypeBuy:
+		if o.AveragePrice.IsZero() {
+			return o.Quantity.Mul(o.Price), o.Market.QuoteCurrency
+		} else {
+			return o.Quantity.Mul(o.AveragePrice), o.Market.QuoteCurrency
+		}
+
+	case SideTypeSell:
+		return o.Quantity, o.Market.BaseCurrency
+
+	}
+
+	return fixedpoint.Zero, ""
+}
+
+func (o *SubmitOrder) Out() (fixedpoint.Value, string) {
+	switch o.Side {
+	case SideTypeBuy:
+		return o.Quantity, o.Market.BaseCurrency
+
+	case SideTypeSell:
+		if o.AveragePrice.IsZero() {
+			return o.Quantity.Mul(o.Price), o.Market.QuoteCurrency
+		} else {
+			return o.Quantity.Mul(o.AveragePrice), o.Market.QuoteCurrency
+		}
+	}
+
+	return fixedpoint.Zero, ""
 }
 
 func (o *SubmitOrder) String() string {
@@ -220,6 +251,7 @@ type Order struct {
 	CreationTime     Time             `json:"creationTime" db:"created_at"`
 	UpdateTime       Time             `json:"updateTime" db:"updated_at"`
 
+	IsFutures  bool `json:"isFutures" db:"is_futures"`
 	IsMargin   bool `json:"isMargin" db:"is_margin"`
 	IsIsolated bool `json:"isIsolated" db:"is_isolated"`
 }
@@ -249,8 +281,8 @@ func (o Order) CsvRecords() [][]string {
 			string(o.Status),
 			o.Price.String(),
 			o.Quantity.String(),
-			o.CreationTime.Time().Format(time.RFC1123),
-			o.UpdateTime.Time().Format(time.RFC1123),
+			o.CreationTime.Time().Local().Format(time.RFC1123),
+			o.UpdateTime.Time().Local().Format(time.RFC1123),
 			o.Tag,
 		},
 	}
@@ -352,6 +384,6 @@ func (o Order) SlackAttachment() slack.Attachment {
 		// Text:   "",
 		Fields:     fields,
 		FooterIcon: footerIcon,
-		Footer:     strings.ToLower(o.Exchange.String()) + util.Render(" creation time {{ . }}", o.CreationTime.Time().Format(time.StampMilli)),
+		Footer:     strings.ToLower(o.Exchange.String()) + templateutil.Render(" creation time {{ . }}", o.CreationTime.Time().Format(time.StampMilli)),
 	}
 }

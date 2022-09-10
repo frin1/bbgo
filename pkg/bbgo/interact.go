@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/c9s/bbgo/pkg/dynamic"
 	"github.com/c9s/bbgo/pkg/fixedpoint"
 	"github.com/c9s/bbgo/pkg/interact"
 	"github.com/c9s/bbgo/pkg/types"
@@ -15,6 +16,10 @@ import (
 
 type PositionCloser interface {
 	ClosePosition(ctx context.Context, percentage fixedpoint.Value) error
+}
+
+type PositionResetter interface {
+	ResetPosition() error
 }
 
 type PositionReader interface {
@@ -27,12 +32,20 @@ type closePositionContext struct {
 	percentage fixedpoint.Value
 }
 
+type modifyPositionContext struct {
+	signature string
+	modifier  *types.Position
+	target    string
+	value     fixedpoint.Value
+}
+
 type CoreInteraction struct {
 	environment *Environment
 	trader      *Trader
 
-	exchangeStrategies   map[string]SingleExchangeStrategy
-	closePositionContext closePositionContext
+	exchangeStrategies    map[string]SingleExchangeStrategy
+	closePositionContext  closePositionContext
+	modifyPositionContext modifyPositionContext
 }
 
 func NewCoreInteraction(environment *Environment, trader *Trader) *CoreInteraction {
@@ -41,6 +54,27 @@ func NewCoreInteraction(environment *Environment, trader *Trader) *CoreInteracti
 		trader:             trader,
 		exchangeStrategies: make(map[string]SingleExchangeStrategy),
 	}
+}
+
+type SimpleInteraction struct {
+	Command     string
+	Description string
+	F           interface{}
+	Cmd         *interact.Command
+}
+
+func (it *SimpleInteraction) Commands(i *interact.Interact) {
+	it.Cmd = i.PrivateCommand(it.Command, it.Description, it.F)
+}
+
+func RegisterCommand(command, desc string, f interface{}) *interact.Command {
+	it := &SimpleInteraction{
+		Command:     command,
+		Description: desc,
+		F:           f,
+	}
+	interact.AddCustomInteraction(it)
+	return it.Cmd
 }
 
 func getStrategySignatures(exchangeStrategies map[string]SingleExchangeStrategy) []string {
@@ -58,6 +92,21 @@ func filterStrategyByInterface(checkInterface interface{}, exchangeStrategies ma
 	rt := reflect.TypeOf(checkInterface).Elem()
 	for signature, strategy := range exchangeStrategies {
 		if ok := reflect.TypeOf(strategy).Implements(rt); ok {
+			strategies[signature] = strategy
+			found = true
+		}
+	}
+
+	return strategies, found
+}
+
+func filterStrategyByField(fieldName string, fieldType reflect.Type, exchangeStrategies map[string]SingleExchangeStrategy) (strategies map[string]SingleExchangeStrategy, found bool) {
+	found = false
+	strategies = make(map[string]SingleExchangeStrategy)
+	for signature, strategy := range exchangeStrategies {
+		r := reflect.ValueOf(strategy).Elem()
+		f := r.FieldByName(fieldName)
+		if !f.IsZero() && f.Type() == fieldType {
 			strategies[signature] = strategy
 			found = true
 		}
@@ -127,7 +176,7 @@ func (it *CoreInteraction) Commands(i *interact.Interact) {
 			reply.AddMultipleButtons(generateStrategyButtonsForm(strategies))
 			reply.Message("Please choose one strategy")
 		} else {
-			reply.Message("No strategy supports PositionReader")
+			reply.Message("No any strategy supports PositionReader")
 		}
 		return nil
 	}).Cycle(func(signature string, reply interact.Reply) error {
@@ -161,6 +210,47 @@ func (it *CoreInteraction) Commands(i *interact.Interact) {
 		return nil
 	})
 
+	i.PrivateCommand("/resetposition", "Reset position", func(reply interact.Reply) error {
+		// it.trader.exchangeStrategies
+		// send symbol options
+		if strategies, found := filterStrategyByInterface((*PositionResetter)(nil), it.exchangeStrategies); found {
+			reply.AddMultipleButtons(generateStrategyButtonsForm(strategies))
+			reply.Message("Please choose one strategy")
+		} else {
+			reply.Message("No strategy supports PositionResetter interface")
+		}
+		return nil
+	}).Next(func(signature string, reply interact.Reply) error {
+		strategy, ok := it.exchangeStrategies[signature]
+		if !ok {
+			reply.Message("Strategy not found")
+			return fmt.Errorf("strategy %s not found", signature)
+		}
+
+		resetter, implemented := strategy.(PositionResetter)
+		if implemented {
+			return resetter.ResetPosition()
+		}
+
+		reset := false
+		err := dynamic.IterateFields(strategy, func(ft reflect.StructField, fv reflect.Value) error {
+			posType := reflect.TypeOf(&types.Position{})
+			if ft.Type == posType {
+				if pos, typeOk := fv.Interface().(*types.Position); typeOk {
+					pos.Reset()
+					reset = true
+				}
+			}
+			return nil
+		})
+
+		if reset {
+			reply.Message("Position is reset")
+		}
+
+		return err
+	})
+
 	i.PrivateCommand("/closeposition", "Close position", func(reply interact.Reply) error {
 		// it.trader.exchangeStrategies
 		// send symbol options
@@ -168,7 +258,7 @@ func (it *CoreInteraction) Commands(i *interact.Interact) {
 			reply.AddMultipleButtons(generateStrategyButtonsForm(strategies))
 			reply.Message("Please choose one strategy")
 		} else {
-			reply.Message("No strategy supports PositionCloser")
+			reply.Message("No strategy supports PositionCloser interface")
 		}
 		return nil
 	}).Next(func(signature string, reply interact.Reply) error {
@@ -387,6 +477,80 @@ func (it *CoreInteraction) Commands(i *interact.Interact) {
 		reply.Message(fmt.Sprintf("Strategy %s stopped and the position closed.", signature))
 		return nil
 	})
+
+	// Position updater
+	i.PrivateCommand("/modifyposition", "Modify Strategy Position", func(reply interact.Reply) error {
+		// it.trader.exchangeStrategies
+		// send symbol options
+		if strategies, found := filterStrategyByField("Position", reflect.TypeOf(types.NewPosition("", "", "")), it.exchangeStrategies); found {
+			reply.AddMultipleButtons(generateStrategyButtonsForm(strategies))
+			reply.Message("Please choose one strategy")
+		} else {
+			reply.Message("No strategy supports Position Modify")
+		}
+		return nil
+	}).Next(func(signature string, reply interact.Reply) error {
+		strategy, ok := it.exchangeStrategies[signature]
+		if !ok {
+			reply.Message("Strategy not found")
+			return fmt.Errorf("strategy %s not found", signature)
+		}
+
+		r := reflect.ValueOf(strategy).Elem()
+		f := r.FieldByName("Position")
+		positionModifier, implemented := f.Interface().(*types.Position)
+		if !implemented {
+			reply.Message(fmt.Sprintf("Strategy %s does not support Position Modify", signature))
+			return fmt.Errorf("strategy %s does not implement Position Modify", signature)
+		}
+
+		it.modifyPositionContext.modifier = positionModifier
+		it.modifyPositionContext.signature = signature
+
+		reply.Message("Please choose what you want to change")
+		reply.AddButton("base", "Base", "base")
+		reply.AddButton("quote", "Quote", "quote")
+		reply.AddButton("cost", "Average Cost", "cost")
+
+		return nil
+	}).Next(func(target string, reply interact.Reply) error {
+		if target != "base" && target != "quote" && target != "cost" {
+			reply.Message(fmt.Sprintf("%q is not a valid target string", target))
+			return fmt.Errorf("%q is not a valid target string", target)
+		}
+
+		it.modifyPositionContext.target = target
+
+		reply.Message("Enter the amount to change")
+
+		return nil
+	}).Next(func(valueStr string, reply interact.Reply) error {
+		value, err := fixedpoint.NewFromString(valueStr)
+		if err != nil {
+			reply.Message(fmt.Sprintf("%q is not a valid value string", valueStr))
+			return err
+		}
+
+		if kc, ok := reply.(interact.KeyboardController); ok {
+			kc.RemoveKeyboard()
+		}
+
+		if it.modifyPositionContext.target == "base" {
+			err = it.modifyPositionContext.modifier.ModifyBase(value)
+		} else if it.modifyPositionContext.target == "quote" {
+			err = it.modifyPositionContext.modifier.ModifyQuote(value)
+		} else if it.modifyPositionContext.target == "cost" {
+			err = it.modifyPositionContext.modifier.ModifyAverageCost(value)
+		}
+
+		if err != nil {
+			reply.Message(fmt.Sprintf("Failed to modify position of the strategy, %s", err.Error()))
+			return err
+		}
+
+		reply.Message(fmt.Sprintf("Position of strategy %s modified.", it.modifyPositionContext.signature))
+		return nil
+	})
 }
 
 func (it *CoreInteraction) Initialize() error {
@@ -408,7 +572,7 @@ func (it *CoreInteraction) Initialize() error {
 // getStrategySignature returns strategy instance unique signature
 func getStrategySignature(strategy SingleExchangeStrategy) (string, error) {
 	// Returns instance ID
-	var signature = callID(strategy)
+	var signature = dynamic.CallID(strategy)
 	if signature != "" {
 		return signature, nil
 	}

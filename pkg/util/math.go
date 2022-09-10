@@ -1,9 +1,10 @@
 package util
 
 import (
-	"github.com/c9s/bbgo/pkg/fixedpoint"
 	"math"
 	"strconv"
+
+	"github.com/c9s/bbgo/pkg/fixedpoint"
 )
 
 const MaxDigits = 18 // MAX_INT64 ~ 9 * 10^18
@@ -56,3 +57,4 @@ func Zero(v float64) bool {
 func NotZero(v float64) bool {
 	return math.Abs(v) > epsilon
 }
+
