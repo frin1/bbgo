@@ -155,3 +155,169 @@ func TestNewAccountValueCalculator_MarginLevel(t *testing.T) {
 		fixedpoint.NewFromFloat(21000.0).Div(fixedpoint.NewFromFloat(19000.0).Mul(fixedpoint.NewFromFloat(1.003))).FormatString(6),
 		marginLevel.FormatString(6))
 }
+
+func number(n float64) fixedpoint.Value {
+	return fixedpoint.NewFromFloat(n)
+}
+
+func Test_aggregateUsdValue(t *testing.T) {
+	type args struct {
+		balances types.BalanceMap
+	}
+	tests := []struct {
+		name string
+		args args
+		want fixedpoint.Value
+	}{
+		{
+			name: "mixed",
+			args: args{
+				balances: types.BalanceMap{
+					"USDC": types.Balance{Currency: "USDC", Available: number(70.0)},
+					"USDT": types.Balance{Currency: "USDT", Available: number(100.0)},
+					"BUSD": types.Balance{Currency: "BUSD", Available: number(80.0)},
+					"BTC":  types.Balance{Currency: "BTC", Available: number(0.01)},
+				},
+			},
+			want: number(250.0),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equalf(t, tt.want, aggregateUsdNetValue(tt.args.balances), "aggregateUsdNetValue(%v)", tt.args.balances)
+		})
+	}
+}
+
+func Test_usdFiatBalances(t *testing.T) {
+	type args struct {
+		balances types.BalanceMap
+	}
+	tests := []struct {
+		name      string
+		args      args
+		wantFiats types.BalanceMap
+		wantRest  types.BalanceMap
+	}{
+		{
+			args: args{
+				balances: types.BalanceMap{
+					"USDC": types.Balance{Currency: "USDC", Available: number(70.0)},
+					"USDT": types.Balance{Currency: "USDT", Available: number(100.0)},
+					"BUSD": types.Balance{Currency: "BUSD", Available: number(80.0)},
+					"BTC":  types.Balance{Currency: "BTC", Available: number(0.01)},
+				},
+			},
+			wantFiats: types.BalanceMap{
+				"USDC": types.Balance{Currency: "USDC", Available: number(70.0)},
+				"USDT": types.Balance{Currency: "USDT", Available: number(100.0)},
+				"BUSD": types.Balance{Currency: "BUSD", Available: number(80.0)},
+			},
+			wantRest: types.BalanceMap{
+				"BTC": types.Balance{Currency: "BTC", Available: number(0.01)},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotFiats, gotRest := usdFiatBalances(tt.args.balances)
+			assert.Equalf(t, tt.wantFiats, gotFiats, "usdFiatBalances(%v)", tt.args.balances)
+			assert.Equalf(t, tt.wantRest, gotRest, "usdFiatBalances(%v)", tt.args.balances)
+		})
+	}
+}
+
+func Test_calculateNetValueInQuote(t *testing.T) {
+	type args struct {
+		balances      types.BalanceMap
+		prices        types.PriceMap
+		quoteCurrency string
+	}
+	tests := []struct {
+		name             string
+		args             args
+		wantAccountValue fixedpoint.Value
+	}{
+		{
+			name: "positive asset",
+			args: args{
+				balances: types.BalanceMap{
+					"USDC": types.Balance{Currency: "USDC", Available: number(70.0)},
+					"USDT": types.Balance{Currency: "USDT", Available: number(100.0)},
+					"BUSD": types.Balance{Currency: "BUSD", Available: number(80.0)},
+					"BTC":  types.Balance{Currency: "BTC", Available: number(0.01)},
+				},
+				prices: types.PriceMap{
+					"USDCUSDT": number(1.0),
+					"BUSDUSDT": number(1.0),
+					"BTCUSDT":  number(19000.0),
+				},
+				quoteCurrency: "USDT",
+			},
+			wantAccountValue: number(19000.0*0.01 + 100.0 + 80.0 + 70.0),
+		},
+		{
+			name: "reversed usdt price",
+			args: args{
+				balances: types.BalanceMap{
+					"USDC": types.Balance{Currency: "USDC", Available: number(70.0)},
+					"TWD":  types.Balance{Currency: "TWD", Available: number(3000.0)},
+					"USDT": types.Balance{Currency: "USDT", Available: number(100.0)},
+					"BUSD": types.Balance{Currency: "BUSD", Available: number(80.0)},
+					"BTC":  types.Balance{Currency: "BTC", Available: number(0.01)},
+				},
+				prices: types.PriceMap{
+					"USDTTWD":  number(30.0),
+					"USDCUSDT": number(1.0),
+					"BUSDUSDT": number(1.0),
+					"BTCUSDT":  number(19000.0),
+				},
+				quoteCurrency: "USDT",
+			},
+			wantAccountValue: number(19000.0*0.01 + 100.0 + 80.0 + 70.0 + (3000.0 / 30.0)),
+		},
+		{
+			name: "borrow base asset",
+			args: args{
+				balances: types.BalanceMap{
+					"USDT": types.Balance{Currency: "USDT", Available: number(20000.0 * 2)},
+					"USDC": types.Balance{Currency: "USDC", Available: number(70.0)},
+					"BUSD": types.Balance{Currency: "BUSD", Available: number(80.0)},
+					"BTC":  types.Balance{Currency: "BTC", Available: number(0), Borrowed: number(2.0)},
+				},
+				prices: types.PriceMap{
+					"USDCUSDT": number(1.0),
+					"BUSDUSDT": number(1.0),
+					"BTCUSDT":  number(19000.0),
+				},
+				quoteCurrency: "USDT",
+			},
+			wantAccountValue: number(19000.0*-2.0 + 20000.0*2 + 80.0 + 70.0),
+		},
+		{
+			name: "multi base asset",
+			args: args{
+				balances: types.BalanceMap{
+					"USDT": types.Balance{Currency: "USDT", Available: number(20000.0 * 2)},
+					"USDC": types.Balance{Currency: "USDC", Available: number(70.0)},
+					"BUSD": types.Balance{Currency: "BUSD", Available: number(80.0)},
+					"ETH":  types.Balance{Currency: "ETH", Available: number(10.0)},
+					"BTC":  types.Balance{Currency: "BTC", Available: number(0), Borrowed: number(2.0)},
+				},
+				prices: types.PriceMap{
+					"USDCUSDT": number(1.0),
+					"BUSDUSDT": number(1.0),
+					"ETHUSDT":  number(1700.0),
+					"BTCUSDT":  number(19000.0),
+				},
+				quoteCurrency: "USDT",
+			},
+			wantAccountValue: number(19000.0*-2.0 + 1700.0*10.0 + 20000.0*2 + 80.0 + 70.0),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equalf(t, tt.wantAccountValue, calculateNetValueInQuote(tt.args.balances, tt.args.prices, tt.args.quoteCurrency), "calculateNetValueInQuote(%v, %v, %v)", tt.args.balances, tt.args.prices, tt.args.quoteCurrency)
+		})
+	}
+}

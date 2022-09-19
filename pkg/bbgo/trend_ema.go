@@ -20,10 +20,6 @@ type TrendEMA struct {
 }
 
 func (s *TrendEMA) Bind(session *ExchangeSession, orderExecutor *GeneralOrderExecutor) {
-	if s.MaxGradient == 0.0 {
-		s.MaxGradient = 1.0
-	}
-
 	symbol := orderExecutor.Position().Symbol
 	s.ewma = session.StandardIndicatorSet(symbol).EWMA(s.IntervalWindow)
 
@@ -44,7 +40,7 @@ func (s *TrendEMA) Bind(session *ExchangeSession, orderExecutor *GeneralOrderExe
 
 func (s *TrendEMA) Gradient() float64 {
 	if s.last > 0.0 && s.current > 0.0 {
-		return s.last / s.current
+		return s.current / s.last
 	}
 	return 0.0
 }
@@ -58,13 +54,13 @@ func (s *TrendEMA) GradientAllowed() bool {
 		return false
 	}
 
-	if s.MaxGradient > 0.0 && gradient < s.MaxGradient {
-		return true
+	if s.MaxGradient > 0.0 && gradient > s.MaxGradient {
+		return false
 	}
 
-	if s.MinGradient > 0.0 && gradient > s.MinGradient {
-		return true
+	if s.MinGradient > 0.0 && gradient < s.MinGradient {
+		return false
 	}
 
-	return false
+	return true
 }

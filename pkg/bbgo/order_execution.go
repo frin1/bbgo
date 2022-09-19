@@ -98,8 +98,6 @@ func (e *ExchangeOrderExecutionRouter) CancelOrdersTo(ctx context.Context, sessi
 type ExchangeOrderExecutor struct {
 	// MinQuoteBalance fixedpoint.Value `json:"minQuoteBalance,omitempty" yaml:"minQuoteBalance,omitempty"`
 
-	Notifiability `json:"-" yaml:"-"`
-
 	Session *ExchangeSession `json:"-" yaml:"-"`
 
 	// private trade update callbacks
@@ -109,18 +107,6 @@ type ExchangeOrderExecutor struct {
 	orderUpdateCallbacks []func(order types.Order)
 }
 
-func (e *ExchangeOrderExecutor) notifySubmitOrders(orders ...types.SubmitOrder) {
-	for _, order := range orders {
-		// pass submit order as an interface object.
-		channel, ok := e.RouteObject(&order)
-		if ok {
-			NotifyTo(channel, ":memo: Submitting %s %s %s order with quantity: %f @ %f, order: %v", order.Symbol, order.Type, order.Side, order.Quantity.Float64(), order.Price.Float64(), &order)
-		} else {
-			Notify(":memo: Submitting %s %s %s order with quantity: %f @ %f, order: %v", order.Symbol, order.Type, order.Side, order.Quantity.Float64(), order.Price.Float64(), &order)
-		}
-	}
-}
-
 func (e *ExchangeOrderExecutor) SubmitOrders(ctx context.Context, orders ...types.SubmitOrder) (types.OrderSlice, error) {
 	formattedOrders, err := e.Session.FormatOrders(orders)
 	if err != nil {
@@ -128,18 +114,8 @@ func (e *ExchangeOrderExecutor) SubmitOrders(ctx context.Context, orders ...type
 	}
 
 	for _, order := range formattedOrders {
-		// pass submit order as an interface object.
-		channel, ok := e.RouteObject(&order)
-		if ok {
-			NotifyTo(channel, ":memo: Submitting %s %s %s order with quantity: %f, order: %v", order.Symbol, order.Type, order.Side, order.Quantity.Float64(), &order)
-		} else {
-			Notify(":memo: Submitting %s %s %s order with quantity: %f: %v", order.Symbol, order.Type, order.Side, order.Quantity.Float64(), &order)
-		}
-
 		log.Infof("submitting order: %s", order.String())
 	}
-
-	e.notifySubmitOrders(formattedOrders...)
 
 	createdOrders, _, err := BatchPlaceOrder(ctx, e.Session.Exchange, formattedOrders...)
 	return createdOrders, err

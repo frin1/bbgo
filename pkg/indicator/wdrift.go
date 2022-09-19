@@ -14,28 +14,32 @@ import (
 type WeightedDrift struct {
 	types.SeriesBase
 	types.IntervalWindow
-	chng   *types.Queue
-	Values floats.Slice
-	MA     types.UpdatableSeriesExtend
+	chng            *types.Queue
+	Values          floats.Slice
+	MA              types.UpdatableSeriesExtend
 	Weight          *types.Queue
 	LastValue       float64
 	UpdateCallbacks []func(value float64)
 }
 
 func (inc *WeightedDrift) Update(value float64, weight float64) {
+	win := 10
+	if inc.Window > win {
+		win = inc.Window
+	}
 	if inc.chng == nil {
 		inc.SeriesBase.Series = inc
 		if inc.MA == nil {
 			inc.MA = &SMA{IntervalWindow: types.IntervalWindow{Interval: inc.Interval, Window: inc.Window}}
 		}
-		inc.Weight = types.NewQueue(10)
+		inc.Weight = types.NewQueue(win)
 		inc.chng = types.NewQueue(inc.Window)
 		inc.LastValue = value
 		inc.Weight.Update(weight)
 		return
 	}
 	inc.Weight.Update(weight)
-	base := inc.Weight.Lowest(10)
+	base := inc.Weight.Lowest(win)
 	multiplier := int(weight / base)
 	var chng float64
 	if value == 0 {
@@ -119,7 +123,7 @@ func (inc *WeightedDrift) Length() int {
 var _ types.SeriesExtend = &Drift{}
 
 func (inc *WeightedDrift) PushK(k types.KLine) {
-	inc.Update(k.Close.Float64(), k.Volume.Float64())
+	inc.Update(k.Close.Float64(), k.Volume.Abs().Float64())
 }
 
 func (inc *WeightedDrift) CalculateAndUpdate(allKLines []types.KLine) {

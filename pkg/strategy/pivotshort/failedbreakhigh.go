@@ -4,10 +4,16 @@ import (
 	"context"
 
 	"github.com/c9s/bbgo/pkg/bbgo"
+	"github.com/c9s/bbgo/pkg/datatype/floats"
 	"github.com/c9s/bbgo/pkg/fixedpoint"
 	"github.com/c9s/bbgo/pkg/indicator"
 	"github.com/c9s/bbgo/pkg/types"
 )
+
+type MACDDivergence struct {
+	*indicator.MACDConfig
+	PivotWindow int `json:"pivotWindow"`
+}
 
 // FailedBreakHigh -- when price breaks the previous pivot low, we set a trade entry
 type FailedBreakHigh struct {
@@ -17,6 +23,10 @@ type FailedBreakHigh struct {
 	// IntervalWindow is used for finding the pivot high
 	types.IntervalWindow
 
+	FastWindow int
+
+	bbgo.OpenPositionOptions
+
 	// BreakInterval is used for checking failed break
 	BreakInterval types.Interval `json:"breakInterval"`
 
@@ -25,11 +35,9 @@ type FailedBreakHigh struct {
 	// Ratio is a number less than 1.0, price * ratio will be the price triggers the short order.
 	Ratio fixedpoint.Value `json:"ratio"`
 
-	// MarketOrder is the option to enable market order short.
-	MarketOrder bool `json:"marketOrder"`
-
-	Leverage fixedpoint.Value `json:"leverage"`
-	Quantity fixedpoint.Value `json:"quantity"`
+	// EarlyStopRatio adjusts the break high price with the given ratio
+	// this is for stop loss earlier if the price goes above the previous price
+	EarlyStopRatio fixedpoint.Value `json:"earlyStopRatio"`
 
 	VWMA *types.IntervalWindow `json:"vwma"`
 
@@ -37,14 +45,24 @@ type FailedBreakHigh struct {
 
 	TrendEMA *bbgo.TrendEMA `json:"trendEMA"`
 
-	lastFailedBreakHigh, lastHigh fixedpoint.Value
+	MACDDivergence *MACDDivergence `json:"macdDivergence"`
 
-	pivotHigh       *indicator.PivotHigh
-	vwma            *indicator.VWMA
-	PivotHighPrices []fixedpoint.Value
+	macd *indicator.MACD
+
+	macdTopDivergence bool
+
+	lastFailedBreakHigh, lastHigh, lastFastHigh fixedpoint.Value
+	lastHighInvalidated                         bool
+	pivotHighPrices                             []fixedpoint.Value
+
+	pivotHigh, fastPivotHigh *indicator.PivotHigh
+	vwma                     *indicator.VWMA
 
 	orderExecutor *bbgo.GeneralOrderExecutor
 	session       *bbgo.ExchangeSession
+
+	// StrategyController
+	bbgo.StrategyController
 }
 
 func (s *FailedBreakHigh) Subscribe(session *bbgo.ExchangeSession) {
@@ -63,6 +81,10 @@ func (s *FailedBreakHigh) Subscribe(session *bbgo.ExchangeSession) {
 	if s.TrendEMA != nil {
 		session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.TrendEMA.Interval})
 	}
+
+	if s.MACDDivergence != nil {
+		session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.MACDDivergence.Interval})
+	}
 }
 
 func (s *FailedBreakHigh) Bind(session *bbgo.ExchangeSession, orderExecutor *bbgo.GeneralOrderExecutor) {
@@ -73,12 +95,34 @@ func (s *FailedBreakHigh) Bind(session *bbgo.ExchangeSession, orderExecutor *bbg
 		return
 	}
 
+	// set default value for StrategyController
+	s.Status = types.StrategyStatusRunning
+
+	if s.FastWindow == 0 {
+		s.FastWindow = 3
+	}
+
 	position := orderExecutor.Position()
 	symbol := position.Symbol
 	standardIndicator := session.StandardIndicatorSet(s.Symbol)
 
 	s.lastHigh = fixedpoint.Zero
 	s.pivotHigh = standardIndicator.PivotHigh(s.IntervalWindow)
+	s.fastPivotHigh = standardIndicator.PivotHigh(types.IntervalWindow{
+		Interval: s.IntervalWindow.Interval,
+		Window:   s.FastWindow,
+	})
+
+	// Experimental: MACD divergence detection
+	if s.MACDDivergence != nil {
+		log.Infof("MACD divergence detection is enabled")
+		s.macd = standardIndicator.MACD(s.MACDDivergence.IntervalWindow, s.MACDDivergence.ShortPeriod, s.MACDDivergence.LongPeriod)
+		s.macd.OnUpdate(func(macd, signal, histogram float64) {
+			log.Infof("MACD %+v: macd: %f, signal: %f histogram: %f", s.macd.IntervalWindow, macd, signal, histogram)
+			s.detectMacdDivergence()
+		})
+		s.detectMacdDivergence()
+	}
 
 	if s.VWMA != nil {
 		s.vwma = standardIndicator.VWMA(types.IntervalWindow{
@@ -111,7 +155,7 @@ func (s *FailedBreakHigh) Bind(session *bbgo.ExchangeSession, orderExecutor *bbg
 				return
 			}
 
-			bbgo.Notify("%s new pivot low: %f", s.Symbol, s.pivotHigh.Last())
+			bbgo.Notify("%s new pivot high: %f", s.Symbol, s.pivotHigh.Last())
 		}
 	}))
 
@@ -119,6 +163,11 @@ func (s *FailedBreakHigh) Bind(session *bbgo.ExchangeSession, orderExecutor *bbg
 	// so that we can close the position earlier
 	session.MarketDataStream.OnKLineClosed(types.KLineWith(s.Symbol, s.BreakInterval, func(k types.KLine) {
 		if !s.Enabled {
+			return
+		}
+
+		// StrategyController
+		if s.Status != types.StrategyStatusRunning {
 			return
 		}
 
@@ -132,9 +181,16 @@ func (s *FailedBreakHigh) Bind(session *bbgo.ExchangeSession, orderExecutor *bbg
 			return
 		}
 
+		lastHigh := s.lastFastHigh
+
+		if !s.EarlyStopRatio.IsZero() {
+			lastHigh = lastHigh.Mul(one.Add(s.EarlyStopRatio))
+		}
+
 		// the kline opened below the last break low, and closed above the last break low
-		if k.Open.Compare(s.lastFailedBreakHigh) < 0 && k.Close.Compare(s.lastFailedBreakHigh) > 0 {
-			bbgo.Notify("kLine closed above the last break high, triggering stop earlier")
+		if k.Open.Compare(lastHigh) < 0 && k.Close.Compare(lastHigh) > 0 && k.Open.Compare(k.Close) > 0 {
+			bbgo.Notify("kLine closed %f above the last break high %f (ratio %f), triggering stop earlier", k.Close.Float64(), lastHigh.Float64(), s.EarlyStopRatio.Float64())
+
 			if err := s.orderExecutor.ClosePosition(context.Background(), one, "failedBreakHighStop"); err != nil {
 				log.WithError(err).Error("position close error")
 			}
@@ -145,8 +201,18 @@ func (s *FailedBreakHigh) Bind(session *bbgo.ExchangeSession, orderExecutor *bbg
 	}))
 
 	session.MarketDataStream.OnKLineClosed(types.KLineWith(s.Symbol, s.BreakInterval, func(kline types.KLine) {
-		if len(s.PivotHighPrices) == 0 || s.lastHigh.IsZero() {
-			log.Infof("currently there is no pivot high prices, can not check failed break high...")
+		if len(s.pivotHighPrices) == 0 || s.lastHigh.IsZero() {
+			log.Infof("%s currently there is no pivot high prices, can not check failed break high...", s.Symbol)
+			return
+		}
+
+		if s.lastHighInvalidated {
+			log.Infof("%s last high %f is invalidated by the fast pivot", s.Symbol, s.lastHigh.Float64())
+			return
+		}
+
+		// StrategyController
+		if s.Status != types.StrategyStatusRunning {
 			return
 		}
 
@@ -160,13 +226,13 @@ func (s *FailedBreakHigh) Bind(session *bbgo.ExchangeSession, orderExecutor *bbg
 		// we need few conditions:
 		// 1) kline.High is higher than the previous high
 		// 2) kline.Close is lower than the previous high
-		// 3) kline.Close is lower than kline.Open
 		if kline.High.Compare(breakPrice) < 0 || closePrice.Compare(breakPrice) >= 0 {
 			return
 		}
 
+		// 3) kline.Close is lower than kline.Open
 		if closePrice.Compare(openPrice) > 0 {
-			bbgo.Notify("the closed price is higher than the open price, skip failed break high short")
+			bbgo.Notify("the %s closed price %f is higher than the open price %f, skip failed break high short", s.Symbol, closePrice.Float64(), openPrice.Float64())
 			return
 		}
 
@@ -180,12 +246,8 @@ func (s *FailedBreakHigh) Bind(session *bbgo.ExchangeSession, orderExecutor *bbg
 
 		bbgo.Notify("%s FailedBreakHigh signal detected, closed price %f < breakPrice %f", kline.Symbol, closePrice.Float64(), breakPrice.Float64())
 
-		if s.lastFailedBreakHigh.IsZero() || previousHigh.Compare(s.lastFailedBreakHigh) < 0 {
-			s.lastFailedBreakHigh = previousHigh
-		}
-
 		if position.IsOpened(kline.Close) {
-			bbgo.Notify("position is already opened, skip")
+			bbgo.Notify("%s position is already opened, skip", s.Symbol)
 			return
 		}
 
@@ -203,57 +265,41 @@ func (s *FailedBreakHigh) Bind(session *bbgo.ExchangeSession, orderExecutor *bbg
 			}
 		}
 
+		if s.macd != nil && !s.macdTopDivergence {
+			bbgo.Notify("Detected MACD top divergence")
+			return
+		}
+
+		if s.lastFailedBreakHigh.IsZero() || previousHigh.Compare(s.lastFailedBreakHigh) < 0 {
+			s.lastFailedBreakHigh = previousHigh
+		}
+
 		ctx := context.Background()
+
+		bbgo.Notify("%s price %f failed breaking the previous high %f with ratio %f, opening short position",
+			symbol,
+			kline.Close.Float64(),
+			previousHigh.Float64(),
+			s.Ratio.Float64())
 
 		// graceful cancel all active orders
 		_ = orderExecutor.GracefulCancel(ctx)
 
-		quantity, err := bbgo.CalculateBaseQuantity(s.session, s.Market, closePrice, s.Quantity, s.Leverage)
-		if err != nil {
-			log.WithError(err).Errorf("quantity calculation error")
-		}
-
-		if quantity.IsZero() {
-			log.Warn("quantity is zero, can not submit order, skip")
-			return
-		}
-
-		if s.MarketOrder {
-			bbgo.Notify("%s price %f failed breaking the previous high %f with ratio %f, submitting market sell %f to open a short position", symbol, kline.Close.Float64(), previousHigh.Float64(), s.Ratio.Float64(), quantity.Float64())
-			_, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
-				Symbol:           s.Symbol,
-				Side:             types.SideTypeSell,
-				Type:             types.OrderTypeMarket,
-				Quantity:         quantity,
-				MarginSideEffect: types.SideEffectTypeMarginBuy,
-				Tag:              "FailedBreakHighMarket",
-			})
-			if err != nil {
-				bbgo.Notify(err.Error())
-			}
-
-		} else {
-			sellPrice := previousHigh
-
-			bbgo.Notify("%s price %f failed breaking the previous high %f with ratio %f, submitting limit sell @ %f", symbol, kline.Close.Float64(), previousHigh.Float64(), s.Ratio.Float64(), sellPrice.Float64())
-			_, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
-				Symbol:           kline.Symbol,
-				Side:             types.SideTypeSell,
-				Type:             types.OrderTypeLimit,
-				Price:            sellPrice,
-				Quantity:         quantity,
-				MarginSideEffect: types.SideEffectTypeMarginBuy,
-				Tag:              "FailedBreakHighLimit",
-			})
-
-			if err != nil {
-				bbgo.Notify(err.Error())
-			}
+		opts := s.OpenPositionOptions
+		opts.Short = true
+		opts.Price = closePrice
+		opts.Tags = []string{"FailedBreakHighMarket"}
+		if err := s.orderExecutor.OpenPosition(ctx, opts); err != nil {
+			log.WithError(err).Errorf("failed to open short position")
 		}
 	}))
 }
 
 func (s *FailedBreakHigh) pilotQuantityCalculation() {
+	if s.lastHigh.IsZero() {
+		return
+	}
+
 	log.Infof("pilot calculation for max position: last low = %f, quantity = %f, leverage = %f",
 		s.lastHigh.Float64(),
 		s.Quantity.Float64(),
@@ -272,13 +318,87 @@ func (s *FailedBreakHigh) pilotQuantityCalculation() {
 	bbgo.Notify("%s %f quantity will be used for failed break high short", s.Symbol, quantity.Float64())
 }
 
+func (s *FailedBreakHigh) detectMacdDivergence() {
+	if s.MACDDivergence == nil {
+		return
+	}
+
+	// always reset the top divergence to false
+	s.macdTopDivergence = false
+
+	histogramValues := s.macd.Histogram
+
+	pivotWindow := s.MACDDivergence.PivotWindow
+	if pivotWindow == 0 {
+		pivotWindow = 3
+	}
+
+	if len(histogramValues) < pivotWindow*2 {
+		log.Warnf("histogram values is not enough for finding pivots, length=%d", len(histogramValues))
+		return
+	}
+
+	var histogramPivots floats.Slice
+	for i := pivotWindow; i > 0 && i < len(histogramValues); i++ {
+		// find positive histogram and the top
+		pivot, ok := floats.CalculatePivot(histogramValues[0:i], pivotWindow, pivotWindow, func(a, pivot float64) bool {
+			return pivot > 0 && pivot > a
+		})
+		if ok {
+			histogramPivots = append(histogramPivots, pivot)
+		}
+	}
+	log.Infof("histogram pivots: %+v", histogramPivots)
+
+	// take the last 2-3 pivots to check if there is a divergence
+	if len(histogramPivots) < 3 {
+		return
+	}
+
+	histogramPivots = histogramPivots[len(histogramPivots)-3:]
+	minDiff := 0.01
+	for i := len(histogramPivots) - 1; i > 0; i-- {
+		p1 := histogramPivots[i]
+		p2 := histogramPivots[i-1]
+		diff := p1 - p2
+
+		if diff > -minDiff || diff > minDiff {
+			continue
+		}
+
+		// negative value = MACD top divergence
+		if diff < -minDiff {
+			log.Infof("MACD TOP DIVERGENCE DETECTED: diff %f", diff)
+			s.macdTopDivergence = true
+		} else {
+			s.macdTopDivergence = false
+		}
+		return
+	}
+}
+
 func (s *FailedBreakHigh) updatePivotHigh() bool {
-	lastHigh := fixedpoint.NewFromFloat(s.pivotHigh.Last())
-	if lastHigh.IsZero() || lastHigh.Compare(s.lastHigh) == 0 {
+	high := fixedpoint.NewFromFloat(s.pivotHigh.Last())
+	if high.IsZero() {
 		return false
 	}
 
-	s.lastHigh = lastHigh
-	s.PivotHighPrices = append(s.PivotHighPrices, lastHigh)
-	return true
+	lastHighChanged := high.Compare(s.lastHigh) != 0
+	if lastHighChanged {
+		s.lastHigh = high
+		s.lastHighInvalidated = false
+		s.pivotHighPrices = append(s.pivotHighPrices, high)
+	}
+
+	fastHigh := fixedpoint.NewFromFloat(s.fastPivotHigh.Last())
+	if !fastHigh.IsZero() {
+		if fastHigh.Compare(s.lastHigh) > 0 {
+			// invalidate the last low
+			lastHighChanged = false
+			s.lastHighInvalidated = true
+		}
+		s.lastFastHigh = fastHigh
+	}
+
+	return lastHighChanged
 }
