@@ -16,7 +16,14 @@ import (
 	"github.com/c9s/bbgo/pkg/util"
 )
 
-type NotifyFunc func(obj interface{}, args ...interface{})
+var ErrExceededSubmitOrderRetryLimit = errors.New("exceeded submit order retry limit")
+
+// quantityReduceDelta is used to modify the order to submit, especially for the market order
+var quantityReduceDelta = fixedpoint.NewFromFloat(0.005)
+
+// submitOrderRetryLimit is used when SubmitOrder failed, we will re-submit the order.
+// This is for the maximum retries
+const submitOrderRetryLimit = 5
 
 // GeneralOrderExecutor implements the general order executor for strategy
 type GeneralOrderExecutor struct {
@@ -197,17 +204,14 @@ type OpenPositionOptions struct {
 
 	// Leverage is used for leveraged position and account
 	// Leverage is not effected when using non-leverage spot account
-	Leverage fixedpoint.Value `json:"leverage,omitempty"`
+	Leverage fixedpoint.Value `json:"leverage,omitempty" modifiable:"true"`
 
 	// Quantity will be used first, it will override the leverage if it's given
-	Quantity fixedpoint.Value `json:"quantity,omitempty"`
-
-	// MarketOrder set to true to open a position with a market order
-	// default is MarketOrder = true
-	MarketOrder bool `json:"marketOrder,omitempty"`
+	Quantity fixedpoint.Value `json:"quantity,omitempty" modifiable:"true"`
 
 	// LimitOrder set to true to open a position with a limit order
-	LimitOrder bool `json:"limitOrder,omitempty"`
+	// default is false, and will send MarketOrder
+	LimitOrder bool `json:"limitOrder,omitempty" modifiable:"true"`
 
 	// LimitOrderTakerRatio is used when LimitOrder = true, it adjusts the price of the limit order with a ratio.
 	// So you can ensure that the limit order can be a taker order. Higher the ratio, higher the chance it could be a taker order.
@@ -222,7 +226,41 @@ type OpenPositionOptions struct {
 	Tags  []string         `json:"-" yaml:"-"`
 }
 
-func (e *GeneralOrderExecutor) OpenPosition(ctx context.Context, options OpenPositionOptions) error {
+func (e *GeneralOrderExecutor) reduceQuantityAndSubmitOrder(ctx context.Context, price fixedpoint.Value, submitOrder types.SubmitOrder) (types.OrderSlice, error) {
+	var err error
+	for i := 0; i < submitOrderRetryLimit; i++ {
+		q := submitOrder.Quantity.Mul(fixedpoint.One.Sub(quantityReduceDelta))
+		if submitOrder.Side == types.SideTypeSell {
+			if baseBalance, ok := e.session.GetAccount().Balance(e.position.Market.BaseCurrency); ok {
+				q = fixedpoint.Min(q, baseBalance.Available)
+			}
+		} else {
+			if quoteBalance, ok := e.session.GetAccount().Balance(e.position.Market.QuoteCurrency); ok {
+				q = fixedpoint.Min(q, quoteBalance.Available.Div(price))
+			}
+		}
+		log.Warnf("retrying order, adjusting order quantity: %v -> %v", submitOrder.Quantity, q)
+
+		submitOrder.Quantity = q
+		if e.position.Market.IsDustQuantity(submitOrder.Quantity, price) {
+			return nil, types.NewZeroAssetError(nil)
+		}
+
+		createdOrder, err2 := e.SubmitOrders(ctx, submitOrder)
+		if err2 != nil {
+			// collect the error object
+			err = multierr.Append(err, err2)
+			continue
+		}
+
+		log.Infof("created order: %+v", createdOrder)
+		return createdOrder, nil
+	}
+
+	return nil, multierr.Append(ErrExceededSubmitOrderRetryLimit, err)
+}
+
+func (e *GeneralOrderExecutor) OpenPosition(ctx context.Context, options OpenPositionOptions) (types.OrderSlice, error) {
 	price := options.Price
 	submitOrder := types.SubmitOrder{
 		Symbol:           e.position.Symbol,
@@ -231,12 +269,16 @@ func (e *GeneralOrderExecutor) OpenPosition(ctx context.Context, options OpenPos
 		Tag:              strings.Join(options.Tags, ","),
 	}
 
-	baseBalance, _ := e.session.Account.Balance(e.position.Market.BaseCurrency)
+	baseBalance, _ := e.session.GetAccount().Balance(e.position.Market.BaseCurrency)
 
 	// FIXME: fix the max quote borrowing checking
 	// quoteBalance, _ := e.session.Account.Balance(e.position.Market.QuoteCurrency)
 
 	if !options.LimitOrderTakerRatio.IsZero() {
+		if options.Price.IsZero() {
+			return nil, fmt.Errorf("OpenPositionOptions.Price is zero, can not adjust limit taker order price, options given: %+v", options)
+		}
+
 		if options.Long {
 			// use higher price to buy (this ensures that our order will be filled)
 			price = price.Mul(one.Add(options.LimitOrderTakerRatio))
@@ -246,9 +288,7 @@ func (e *GeneralOrderExecutor) OpenPosition(ctx context.Context, options OpenPos
 		}
 	}
 
-	if options.MarketOrder {
-		submitOrder.Type = types.OrderTypeMarket
-	} else if options.LimitOrder {
+	if options.LimitOrder {
 		submitOrder.Type = types.OrderTypeLimit
 		submitOrder.Price = price
 	}
@@ -259,10 +299,14 @@ func (e *GeneralOrderExecutor) OpenPosition(ctx context.Context, options OpenPos
 		if quantity.IsZero() {
 			quoteQuantity, err := CalculateQuoteQuantity(ctx, e.session, e.position.QuoteCurrency, options.Leverage)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
 			quantity = quoteQuantity.Div(price)
+		}
+		if e.position.Market.IsDustQuantity(quantity, price) {
+			log.Warnf("dust quantity: %v", quantity)
+			return nil, nil
 		}
 
 		quoteQuantity := quantity.Mul(price)
@@ -274,21 +318,25 @@ func (e *GeneralOrderExecutor) OpenPosition(ctx context.Context, options OpenPos
 		submitOrder.Side = types.SideTypeBuy
 		submitOrder.Quantity = quantity
 
-		Notify("Opening %s long position with quantity %f at price %f", e.position.Symbol, quantity.Float64(), price.Float64())
-		createdOrder, err2 := e.SubmitOrders(ctx, submitOrder)
-		if err2 != nil {
-			return err2
+		Notify("Opening %s long position with quantity %v at price %v", e.position.Symbol, quantity, price)
+
+		createdOrder, err := e.SubmitOrders(ctx, submitOrder)
+		if err == nil {
+			return createdOrder, nil
 		}
 
-		log.Infof("created order: %+v", createdOrder)
-		return nil
+		return e.reduceQuantityAndSubmitOrder(ctx, price, submitOrder)
 	} else if options.Short {
 		if quantity.IsZero() {
 			var err error
 			quantity, err = CalculateBaseQuantity(e.session, e.position.Market, price, quantity, options.Leverage)
 			if err != nil {
-				return err
+				return nil, err
 			}
+		}
+		if e.position.Market.IsDustQuantity(quantity, price) {
+			log.Warnf("dust quantity: %v", quantity)
+			return nil, nil
 		}
 
 		if e.session.Margin && !e.marginBaseMaxBorrowable.IsZero() && quantity.Sub(baseBalance.Available).Compare(e.marginBaseMaxBorrowable) > 0 {
@@ -300,17 +348,11 @@ func (e *GeneralOrderExecutor) OpenPosition(ctx context.Context, options OpenPos
 		submitOrder.Side = types.SideTypeSell
 		submitOrder.Quantity = quantity
 
-		Notify("Opening %s short position with quantity %f at price %f", e.position.Symbol, quantity.Float64(), price.Float64())
-		createdOrder, err2 := e.SubmitOrders(ctx, submitOrder)
-		if err2 != nil {
-			return err2
-		}
-
-		log.Infof("created order: %+v", createdOrder)
-		return nil
+		Notify("Opening %s short position with quantity %v at price %v", e.position.Symbol, quantity, price)
+		return e.reduceQuantityAndSubmitOrder(ctx, price, submitOrder)
 	}
 
-	return errors.New("options Long or Short must be set")
+	return nil, errors.New("options Long or Short must be set")
 }
 
 // GracefulCancelActiveOrderBook cancels the orders from the active orderbook.
