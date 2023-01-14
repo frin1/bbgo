@@ -9,6 +9,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     strategy:
       matrix:
@@ -25,6 +26,9 @@ jobs:
     steps:
 
     - uses: actions/checkout@v2
+      with:
+        # lfs: 'true'
+        ssh-key: ${{ secrets.git_ssh_key }}
 
     - uses: actions/cache@v2
       with:
@@ -64,6 +68,12 @@ jobs:
 
     - name: Build
       run: go build -v ./cmd/bbgo
+
+    - name: Link Market Data
+      run: |
+        mkdir -p ~/.bbgo/cache
+        ln -s $PWD/data/binance-markets.json ~/.bbgo/cache/binance-markets.json
+        touch data/binance-markets.json
 
     - name: Test
       run: |

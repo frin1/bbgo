@@ -12,13 +12,55 @@ type Interval string
 func (i Interval) Minutes() int {
 	m, ok := SupportedIntervals[i]
 	if !ok {
+		return ParseInterval(i) / 60
+	}
+	return m / 60
+}
+
+func (i Interval) Seconds() int {
+	m, ok := SupportedIntervals[i]
+	if !ok {
 		return ParseInterval(i)
 	}
 	return m
 }
 
+// Milliseconds is specially handled, for better precision
+// for ms level interval, calling Seconds and Minutes directly might trigger panic error
+func (i Interval) Milliseconds() int {
+	t := 0
+	index := 0
+	for i, rn := range string(i) {
+		if rn >= '0' && rn <= '9' {
+			t = t*10 + int(rn-'0')
+		} else {
+			index = i
+			break
+		}
+	}
+	switch strings.ToLower(string(i[index:])) {
+	case "ms":
+		return t
+	case "s":
+		return t * 1000
+	case "m":
+		t *= 60
+	case "h":
+		t *= 60 * 60
+	case "d":
+		t *= 60 * 60 * 24
+	case "w":
+		t *= 60 * 60 * 24 * 7
+	case "mo":
+		t *= 60 * 60 * 24 * 30
+	default:
+		panic("unknown interval input: " + i)
+	}
+	return t * 1000
+}
+
 func (i Interval) Duration() time.Duration {
-	return time.Duration(i.Minutes()) * time.Minute
+	return time.Duration(i.Milliseconds()) * time.Millisecond
 }
 
 func (i *Interval) UnmarshalJSON(b []byte) (err error) {
@@ -45,6 +87,8 @@ func (s IntervalSlice) StringSlice() (slice []string) {
 	return slice
 }
 
+var Interval1ms = Interval("1ms")
+var Interval1s = Interval("1s")
 var Interval1m = Interval("1m")
 var Interval3m = Interval("3m")
 var Interval5m = Interval("5m")
@@ -73,38 +117,41 @@ func ParseInterval(input Interval) int {
 		}
 	}
 	switch strings.ToLower(string(input[index:])) {
-	case "m":
+	case "s":
 		return t
-	case "h":
+	case "m":
 		t *= 60
+	case "h":
+		t *= 60 * 60
 	case "d":
-		t *= 60 * 24
+		t *= 60 * 60 * 24
 	case "w":
-		t *= 60 * 24 * 7
+		t *= 60 * 60 * 24 * 7
 	case "mo":
-		t *= 60 * 24 * 30
+		t *= 60 * 60 * 24 * 30
 	default:
-		panic("unknown input: " + input)
+		panic("unknown interval input: " + input)
 	}
 	return t
 }
 
 var SupportedIntervals = map[Interval]int{
-	Interval1m:  1,
-	Interval3m:  3,
-	Interval5m:  5,
-	Interval15m: 15,
-	Interval30m: 30,
-	Interval1h:  60,
-	Interval2h:  60 * 2,
-	Interval4h:  60 * 4,
-	Interval6h:  60 * 6,
-	Interval12h: 60 * 12,
-	Interval1d:  60 * 24,
-	Interval3d:  60 * 24 * 3,
-	Interval1w:  60 * 24 * 7,
-	Interval2w:  60 * 24 * 14,
-	Interval1mo: 60 * 24 * 30,
+	Interval1s:  1,
+	Interval1m:  1 * 60,
+	Interval3m:  3 * 60,
+	Interval5m:  5 * 60,
+	Interval15m: 15 * 60,
+	Interval30m: 30 * 60,
+	Interval1h:  60 * 60,
+	Interval2h:  60 * 60 * 2,
+	Interval4h:  60 * 60 * 4,
+	Interval6h:  60 * 60 * 6,
+	Interval12h: 60 * 60 * 12,
+	Interval1d:  60 * 60 * 24,
+	Interval3d:  60 * 60 * 24 * 3,
+	Interval1w:  60 * 60 * 24 * 7,
+	Interval2w:  60 * 60 * 24 * 14,
+	Interval1mo: 60 * 60 * 24 * 30,
 }
 
 // IntervalWindow is used by the indicators

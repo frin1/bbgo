@@ -56,11 +56,11 @@ func init() {
 	_ = types.FuturesExchange(&Exchange{})
 
 	if n, ok := util.GetEnvVarInt("BINANCE_ORDER_RATE_LIMITER"); ok {
-		orderLimiter = rate.NewLimiter(rate.Limit(n), 2)
+		orderLimiter = rate.NewLimiter(rate.Every(time.Duration(n)*time.Minute), 2)
 	}
 
 	if n, ok := util.GetEnvVarInt("BINANCE_QUERY_TRADES_RATE_LIMITER"); ok {
-		queryTradeLimiter = rate.NewLimiter(rate.Limit(n), 2)
+		queryTradeLimiter = rate.NewLimiter(rate.Every(time.Duration(n)*time.Minute), 2)
 	}
 }
 
@@ -1413,22 +1413,23 @@ func (e *Exchange) queryMarginTrades(ctx context.Context, symbol string, options
 		req.Limit(1000)
 	}
 
+	// BINANCE seems to have an API bug, we can't use both fromId and the start time/end time
 	// BINANCE uses inclusive last trade ID
 	if options.LastTradeID > 0 {
 		req.FromID(int64(options.LastTradeID))
-	}
-
-	if options.StartTime != nil && options.EndTime != nil {
-		if options.EndTime.Sub(*options.StartTime) < 24*time.Hour {
+	} else {
+		if options.StartTime != nil && options.EndTime != nil {
+			if options.EndTime.Sub(*options.StartTime) < 24*time.Hour {
+				req.StartTime(options.StartTime.UnixMilli())
+				req.EndTime(options.EndTime.UnixMilli())
+			} else {
+				req.StartTime(options.StartTime.UnixMilli())
+			}
+		} else if options.StartTime != nil {
 			req.StartTime(options.StartTime.UnixMilli())
+		} else if options.EndTime != nil {
 			req.EndTime(options.EndTime.UnixMilli())
-		} else {
-			req.StartTime(options.StartTime.UnixMilli())
 		}
-	} else if options.StartTime != nil {
-		req.StartTime(options.StartTime.UnixMilli())
-	} else if options.EndTime != nil {
-		req.EndTime(options.EndTime.UnixMilli())
 	}
 
 	remoteTrades, err = req.Do(ctx)
@@ -1499,40 +1500,40 @@ func (e *Exchange) queryFuturesTrades(ctx context.Context, symbol string, option
 }
 
 func (e *Exchange) querySpotTrades(ctx context.Context, symbol string, options *types.TradeQueryOptions) (trades []types.Trade, err error) {
-	var remoteTrades []*binance.TradeV3
-	req := e.client.NewListTradesService().
-		Symbol(symbol)
+	req := e.client2.NewGetMyTradesRequest()
+	req.Symbol(symbol)
+
+	// BINANCE uses inclusive last trade ID
+	if options.LastTradeID > 0 {
+		req.FromID(options.LastTradeID)
+	} else {
+		if options.StartTime != nil && options.EndTime != nil {
+			if options.EndTime.Sub(*options.StartTime) < 24*time.Hour {
+				req.StartTime(*options.StartTime)
+				req.EndTime(*options.EndTime)
+			} else {
+				req.StartTime(*options.StartTime)
+			}
+		} else if options.StartTime != nil {
+			req.StartTime(*options.StartTime)
+		} else if options.EndTime != nil {
+			req.EndTime(*options.EndTime)
+		}
+	}
 
 	if options.Limit > 0 {
-		req.Limit(int(options.Limit))
+		req.Limit(uint64(options.Limit))
 	} else {
 		req.Limit(1000)
 	}
 
-	// BINANCE uses inclusive last trade ID
-	if options.LastTradeID > 0 {
-		req.FromID(int64(options.LastTradeID))
-	}
-
-	if options.StartTime != nil && options.EndTime != nil {
-		if options.EndTime.Sub(*options.StartTime) < 24*time.Hour {
-			req.StartTime(options.StartTime.UnixMilli())
-			req.EndTime(options.EndTime.UnixMilli())
-		} else {
-			req.StartTime(options.StartTime.UnixMilli())
-		}
-	} else if options.StartTime != nil {
-		req.StartTime(options.StartTime.UnixMilli())
-	} else if options.EndTime != nil {
-		req.EndTime(options.EndTime.UnixMilli())
-	}
-
-	remoteTrades, err = req.Do(ctx)
+	remoteTrades, err := req.Do(ctx)
 	if err != nil {
 		return nil, err
 	}
+
 	for _, t := range remoteTrades {
-		localTrade, err := toGlobalTrade(*t, e.IsMargin)
+		localTrade, err := toGlobalTrade(t, e.IsMargin)
 		if err != nil {
 			log.WithError(err).Errorf("can not convert binance trade: %+v", t)
 			continue
@@ -1668,19 +1669,21 @@ func (e *Exchange) QueryPositionRisk(ctx context.Context, symbol string) (*types
 	return convertPositionRisk(risks[0])
 }
 
+// in seconds
 var SupportedIntervals = map[types.Interval]int{
-	types.Interval1m:  1,
-	types.Interval5m:  5,
-	types.Interval15m: 15,
-	types.Interval30m: 30,
-	types.Interval1h:  60,
-	types.Interval2h:  60 * 2,
-	types.Interval4h:  60 * 4,
-	types.Interval6h:  60 * 6,
-	types.Interval12h: 60 * 12,
-	types.Interval1d:  60 * 24,
-	types.Interval3d:  60 * 24 * 3,
-	types.Interval1w:  60 * 24 * 7,
+	types.Interval1s:  1,
+	types.Interval1m:  1 * 60,
+	types.Interval5m:  5 * 60,
+	types.Interval15m: 15 * 60,
+	types.Interval30m: 30 * 60,
+	types.Interval1h:  60 * 60,
+	types.Interval2h:  60 * 60 * 2,
+	types.Interval4h:  60 * 60 * 4,
+	types.Interval6h:  60 * 60 * 6,
+	types.Interval12h: 60 * 60 * 12,
+	types.Interval1d:  60 * 60 * 24,
+	types.Interval3d:  60 * 60 * 24 * 3,
+	types.Interval1w:  60 * 60 * 24 * 7,
 }
 
 func (e *Exchange) SupportedInterval() map[types.Interval]int {

@@ -100,6 +100,8 @@ type StandardStream struct {
 
 	marketTradeCallbacks []func(trade Trade)
 
+	aggTradeCallbacks []func(trade Trade)
+
 	// Futures
 	FuturesPositionUpdateCallbacks []func(futuresPositions FuturesPositionMap)
 
@@ -121,6 +123,7 @@ type StandardStreamEmitter interface {
 	EmitBookTickerUpdate(BookTicker)
 	EmitBookSnapshot(SliceOrderBook)
 	EmitMarketTrade(Trade)
+	EmitAggTrade(Trade)
 	EmitFuturesPositionUpdate(FuturesPositionMap)
 	EmitFuturesPositionSnapshot(FuturesPositionMap)
 }
@@ -239,7 +242,7 @@ func (s *StandardStream) Read(ctx context.Context, conn *websocket.Conn, cancel 
 			if s.parser != nil {
 				e, err = s.parser(message)
 				if err != nil {
-					log.WithError(err).Errorf("websocket event parse error")
+					log.WithError(err).Errorf("websocket event parse error, message: %s", message)
 					continue
 				}
 			}

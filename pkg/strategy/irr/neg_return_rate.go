@@ -18,10 +18,12 @@ type NRR struct {
 	types.SeriesBase
 
 	RankingWindow int
+	delay         bool
+	prices        *types.Queue
 
-	Prices       *types.Queue
 	Values       floats.Slice
 	RankedValues floats.Slice
+	ReturnValues floats.Slice
 
 	EndTime time.Time
 
@@ -30,20 +32,25 @@ type NRR struct {
 
 var _ types.SeriesExtend = &NRR{}
 
-func (inc *NRR) Update(price float64) {
+func (inc *NRR) Update(openPrice, closePrice float64) {
 	if inc.SeriesBase.Series == nil {
 		inc.SeriesBase.Series = inc
-		inc.Prices = types.NewQueue(inc.Window)
+		inc.prices = types.NewQueue(inc.Window)
 	}
-	inc.Prices.Update(price)
-	if inc.Prices.Length() < inc.Window {
-		return
-	}
-	irr := (inc.Prices.Last() / inc.Prices.Index(inc.Window-1)) - 1
+	inc.prices.Update(closePrice)
 
-	inc.Values.Push(-irr)                                                                  // neg ret here
+	// D0
+	nirr := (openPrice - closePrice) / openPrice
+	irr := (closePrice - openPrice) / openPrice
+	if inc.prices.Length() >= inc.Window && inc.delay {
+		// D1
+		nirr = -1 * ((inc.prices.Last() / inc.prices.Index(inc.Window-1)) - 1)
+		irr = (inc.prices.Last() / inc.prices.Index(inc.Window-1)) - 1
+	}
+
+	inc.Values.Push(nirr)                                                                  // neg ret here
 	inc.RankedValues.Push(inc.Rank(inc.RankingWindow).Last() / float64(inc.RankingWindow)) // ranked neg ret here
-
+	inc.ReturnValues.Push(irr)
 }
 
 func (inc *NRR) Last() float64 {
@@ -75,7 +82,7 @@ func (inc *NRR) PushK(k types.KLine) {
 		return
 	}
 
-	inc.Update(indicator.KLineClosePriceMapper(k))
+	inc.Update(indicator.KLineOpenPriceMapper(k), indicator.KLineClosePriceMapper(k))
 	inc.EndTime = k.EndTime.Time()
 	inc.EmitUpdate(inc.Last())
 }
@@ -86,14 +93,3 @@ func (inc *NRR) LoadK(allKLines []types.KLine) {
 	}
 	inc.EmitUpdate(inc.Last())
 }
-
-//func calculateReturn(klines []types.KLine, window int, val KLineValueMapper) (float64, error) {
-//	length := len(klines)
-//	if length == 0 || length < window {
-//		return 0.0, fmt.Errorf("insufficient elements for calculating VOL with window = %d", window)
-//	}
-//
-//	rate := val(klines[length-1])/val(klines[length-2]) - 1
-//
-//	return rate, nil
-//}

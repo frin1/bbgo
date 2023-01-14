@@ -14,24 +14,27 @@ sessions:
 exchangeStrategies:
 - on: binance
   irr:
-    symbol: BTCBUSD
+    symbol: BTCUSDT
     interval: 1m
-    window: 120
-    amount: 5_000.0
+    window: 10
+    amount: 5000
     # Draw pnl
     drawGraph: true
     graphPNLPath: "./pnl.png"
     graphCumPNLPath: "./cumpnl.png"
 
+
 backtest:
-  sessions:
-    - binance
-  startTime: "2022-09-01"
-  endTime: "2022-10-04"
+  startTime: "2022-01-01"
+  endTime: "2022-11-01"
   symbols:
-    - BTCBUSD
+    - BTCUSDT
+  sessions: [binance]
+#  syncSecKLines: true
   accounts:
     binance:
-      takerFeeRate: 0.0
+      makerFeeRate: 0.0000
+      takerFeeRate: 0.0000
       balances:
-        BUSD: 5_000.0
+        BTC: 0.0
+        USDT: 5000

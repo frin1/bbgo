@@ -25,6 +25,7 @@ var closedOrderQueryLimiter = rate.NewLimiter(rate.Every(1*time.Second), 1)
 var tradeQueryLimiter = rate.NewLimiter(rate.Every(3*time.Second), 1)
 var accountQueryLimiter = rate.NewLimiter(rate.Every(3*time.Second), 1)
 var marketDataLimiter = rate.NewLimiter(rate.Every(2*time.Second), 10)
+var submitOrderLimiter = rate.NewLimiter(rate.Every(300*time.Millisecond), 10)
 
 var log = logrus.WithField("exchange", "max")
 
@@ -243,8 +244,7 @@ func (e *Exchange) QueryOpenOrders(ctx context.Context, symbol string) (orders [
 
 // lastOrderID is not supported on MAX
 func (e *Exchange) QueryClosedOrders(ctx context.Context, symbol string, since, until time.Time, lastOrderID uint64) ([]types.Order, error) {
-	log.Warn("!!!MAX EXCHANGE API NOTICE!!!")
-	log.Warn("the since/until conditions will not be effected on closed orders query, max exchange does not support time-range-based query")
+	log.Warn("!!!MAX EXCHANGE API NOTICE!!! the since/until conditions will not be effected on closed orders query, max exchange does not support time-range-based query")
 	return e.queryClosedOrdersByLastOrderID(ctx, symbol, lastOrderID)
 }
 
@@ -383,67 +383,6 @@ func (e *Exchange) CancelOrders(ctx context.Context, orders ...types.Order) (err
 	return err2
 }
 
-func toMaxSubmitOrder(o types.SubmitOrder) (*maxapi.SubmitOrder, error) {
-	symbol := toLocalSymbol(o.Symbol)
-	orderType, err := toLocalOrderType(o.Type)
-	if err != nil {
-		return nil, err
-	}
-
-	// case IOC type
-	if orderType == maxapi.OrderTypeLimit && o.TimeInForce == types.TimeInForceIOC {
-		orderType = maxapi.OrderTypeIOCLimit
-	}
-
-	var quantityString string
-	if o.Market.Symbol != "" {
-		quantityString = o.Market.FormatQuantity(o.Quantity)
-	} else {
-		quantityString = o.Quantity.String()
-	}
-
-	maxOrder := maxapi.SubmitOrder{
-		Market:    symbol,
-		Side:      toLocalSideType(o.Side),
-		OrderType: orderType,
-		Volume:    quantityString,
-	}
-
-	if o.GroupID > 0 {
-		maxOrder.GroupID = o.GroupID
-	}
-
-	clientOrderID := NewClientOrderID(o.ClientOrderID)
-	if len(clientOrderID) > 0 {
-		maxOrder.ClientOID = clientOrderID
-	}
-
-	switch o.Type {
-	case types.OrderTypeStopLimit, types.OrderTypeLimit, types.OrderTypeLimitMaker:
-		var priceInString string
-		if o.Market.Symbol != "" {
-			priceInString = o.Market.FormatPrice(o.Price)
-		} else {
-			priceInString = o.Price.String()
-		}
-		maxOrder.Price = priceInString
-	}
-
-	// set stop price field for limit orders
-	switch o.Type {
-	case types.OrderTypeStopLimit, types.OrderTypeStopMarket:
-		var priceInString string
-		if o.Market.Symbol != "" {
-			priceInString = o.Market.FormatPrice(o.StopPrice)
-		} else {
-			priceInString = o.StopPrice.String()
-		}
-		maxOrder.StopPrice = priceInString
-	}
-
-	return &maxOrder, nil
-}
-
 func (e *Exchange) Withdraw(ctx context.Context, asset string, amount fixedpoint.Value, address string, options *types.WithdrawalOptions) error {
 	asset = toLocalCurrency(asset)
 
@@ -486,6 +425,10 @@ func (e *Exchange) Withdraw(ctx context.Context, asset string, amount fixedpoint
 }
 
 func (e *Exchange) SubmitOrder(ctx context.Context, order types.SubmitOrder) (createdOrder *types.Order, err error) {
+	if err := submitOrderLimiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+
 	walletType := maxapi.WalletTypeSpot
 	if e.MarginSettings.IsMargin {
 		walletType = maxapi.WalletTypeMargin
@@ -1009,17 +952,17 @@ func (e *Exchange) DefaultFeeRates() types.ExchangeFee {
 }
 
 var SupportedIntervals = map[types.Interval]int{
-	types.Interval1m:  1,
-	types.Interval5m:  5,
-	types.Interval15m: 15,
-	types.Interval30m: 30,
-	types.Interval1h:  60,
-	types.Interval2h:  60 * 2,
-	types.Interval4h:  60 * 4,
-	types.Interval6h:  60 * 6,
-	types.Interval12h: 60 * 12,
-	types.Interval1d:  60 * 24,
-	types.Interval3d:  60 * 24 * 3,
+	types.Interval1m:  1 * 60,
+	types.Interval5m:  5 * 60,
+	types.Interval15m: 15 * 60,
+	types.Interval30m: 30 * 60,
+	types.Interval1h:  60 * 60,
+	types.Interval2h:  60 * 60 * 2,
+	types.Interval4h:  60 * 60 * 4,
+	types.Interval6h:  60 * 60 * 6,
+	types.Interval12h: 60 * 60 * 12,
+	types.Interval1d:  60 * 60 * 24,
+	types.Interval3d:  60 * 60 * 24 * 3,
 }
 
 func (e *Exchange) SupportedInterval() map[types.Interval]int {

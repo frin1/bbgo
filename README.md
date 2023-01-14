@@ -1,6 +1,6 @@
 # BBGO
 
-A crypto trading bot framework written in Go. The name bbgo comes from the BB8 bot in the Star Wars movie.
+A modern crypto trading bot framework written in Go.
 
 ## Current Status
 
@@ -93,7 +93,6 @@ the implementation.
 ## Supported Exchanges
 
 - Binance Spot Exchange (and binance.us)
-- FTX Spot Exchange
 - OKEx Spot Exchange
 - Kucoin Spot Exchange
 - MAX Spot Exchange (located in Taiwan)
@@ -108,7 +107,6 @@ Get your exchange API key and secret after you register the accounts (you can ch
 
 - MAX: <https://max.maicoin.com/signup?r=c7982718>
 - Binance: <https://accounts.binance.com/en/register?ref=38192708>
-- FTX: <https://ftx.com/#a=7710474>
 - OKEx: <https://www.okex.com/join/2412712?src=from:ios-share>
 - Kucoin: <https://www.kucoin.com/ucenter/signup?rcode=r3KX2D4>
 
@@ -178,12 +176,6 @@ BINANCE_US=0
 MAX_API_KEY=
 MAX_API_SECRET=
 
-# for FTX exchange, if you have one
-FTX_API_KEY=
-FTX_API_SECRET=
-# specify it if credentials are for subaccount
-FTX_SUBACCOUNT=
-
 # for OKEx exchange, if you have one
 OKEX_API_KEY=
 OKEX_API_SECRET=
@@ -239,6 +231,23 @@ bbgo pnl --exchange binance --asset BTC --since "2019-01-01"
 --->
 
 ## Advanced Configuration
+
+### Synchronize System Time With Binance
+
+BBGO provides the script for UNIX systems/subsystems to synchronize date with Binance. `jq` and `bc` are required to be installed in previous.
+To install the dependencies in Ubuntu, try the following commands:
+
+```bash
+sudo apt install -y bc jq
+```
+
+And to synchronize the date, try:
+
+```bash
+sudo ./scripts/sync_time.sh
+```
+
+You could also add the script to crontab so that the system time could get synchronized with Binance regularly.
 
 ### Testnet (Paper Trading)
 
@@ -353,6 +362,10 @@ Check out the strategy directory [strategy](pkg/strategy) for all built-in strat
 - `flashcrash` strategy implements a strategy that catches the flashcrash [flashcrash](pkg/strategy/flashcrash)
 - `marketcap` strategy implements a strategy that rebalances the portfolio based on the
   market capitalization [marketcap](pkg/strategy/marketcap). See [document](./doc/strategy/marketcap.md).
+- `pivotshort` - shorting focused strategy.
+- `irr` - return rate strategy.
+- `drift` - drift strategy.
+- `grid2` - the second-generation grid strategy.
 
 To run these built-in strategies, just modify the config file to make the configuration suitable for you, for example if
 you want to run
@@ -445,7 +458,6 @@ bbgo submit-order --session=okex --symbol=OKBUSDT --side=buy --price=10.0 --quan
 
 ```sh
 bbgo list-orders open --session=okex --symbol=OKBUSDT
-bbgo list-orders open --session=ftx --symbol=FTTUSDT
 bbgo list-orders open --session=max --symbol=MAXUSDT
 bbgo list-orders open --session=binance --symbol=BNBUSDT
 ```

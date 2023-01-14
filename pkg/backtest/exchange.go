@@ -48,6 +48,8 @@ import (
 var log = logrus.WithField("cmd", "backtest")
 
 var ErrUnimplemented = errors.New("unimplemented method")
+var ErrNegativeQuantity = errors.New("order quantity can not be negative")
+var ErrZeroQuantity = errors.New("order quantity can not be zero")
 
 type Exchange struct {
 	sourceName     types.ExchangeName
@@ -174,6 +176,14 @@ func (e *Exchange) SubmitOrder(ctx context.Context, order types.SubmitOrder) (cr
 	matching, ok := e.matchingBook(symbol)
 	if !ok {
 		return nil, fmt.Errorf("matching engine is not initialized for symbol %s", symbol)
+	}
+
+	if order.Quantity.Sign() < 0 {
+		return nil, ErrNegativeQuantity
+	}
+
+	if order.Quantity.IsZero() {
+		return nil, ErrZeroQuantity
 	}
 
 	createdOrder, _, err = matching.PlaceOrder(order)
@@ -311,13 +321,13 @@ func (e *Exchange) BindUserData(userDataStream types.StandardStreamEmitter) {
 	e.matchingBooksMutex.Unlock()
 }
 
-func (e *Exchange) SubscribeMarketData(startTime, endTime time.Time, extraIntervals ...types.Interval) (chan types.KLine, error) {
+func (e *Exchange) SubscribeMarketData(startTime, endTime time.Time, requiredInterval types.Interval, extraIntervals ...types.Interval) (chan types.KLine, error) {
 	log.Infof("collecting backtest configurations...")
 
 	loadedSymbols := map[string]struct{}{}
 	loadedIntervals := map[types.Interval]struct{}{
 		// 1m interval is required for the backtest matching engine
-		types.Interval1m: {},
+		requiredInterval: {},
 	}
 
 	for _, it := range extraIntervals {
@@ -348,8 +358,7 @@ func (e *Exchange) SubscribeMarketData(startTime, endTime time.Time, extraInterv
 		intervals = append(intervals, interval)
 	}
 
-	log.Infof("using symbols: %v and intervals: %v for back-testing", symbols, intervals)
-	log.Infof("querying klines from database...")
+	log.Infof("querying klines from database with exchange: %v symbols: %v and intervals: %v for back-testing", e.Name(), symbols, intervals)
 	klineC, errC := e.srv.QueryKLinesCh(startTime, endTime, e, symbols, intervals)
 	go func() {
 		if err := <-errC; err != nil {
@@ -359,7 +368,7 @@ func (e *Exchange) SubscribeMarketData(startTime, endTime time.Time, extraInterv
 	return klineC, nil
 }
 
-func (e *Exchange) ConsumeKLine(k types.KLine) {
+func (e *Exchange) ConsumeKLine(k types.KLine, requiredInterval types.Interval) {
 	matching, ok := e.matchingBook(k.Symbol)
 	if !ok {
 		log.Errorf("matching book of %s is not initialized", k.Symbol)
@@ -369,14 +378,14 @@ func (e *Exchange) ConsumeKLine(k types.KLine) {
 		matching.klineCache = make(map[types.Interval]types.KLine)
 	}
 
-	kline1m, ok := matching.klineCache[k.Interval]
+	requiredKline, ok := matching.klineCache[k.Interval]
 	if ok { // pop out all the old
-		if kline1m.Interval != types.Interval1m {
-			panic("expect 1m kline, got " + kline1m.Interval.String())
+		if requiredKline.Interval != requiredInterval {
+			panic(fmt.Sprintf("expect required kline interval %s, got interval %s", requiredInterval.String(), requiredKline.Interval.String()))
 		}
-		e.currentTime = kline1m.EndTime.Time()
+		e.currentTime = requiredKline.EndTime.Time()
 		// here we generate trades and order updates
-		matching.processKLine(kline1m)
+		matching.processKLine(requiredKline)
 		matching.nextKLine = &k
 		for _, kline := range matching.klineCache {
 			e.MarketDataStream.EmitKLineClosed(kline)

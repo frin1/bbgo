@@ -1,53 +1,12 @@
 package types
 
 import (
-	"encoding/json"
-	"fmt"
 	"math"
-	"time"
 
 	"github.com/leekchan/accounting"
 
 	"github.com/c9s/bbgo/pkg/fixedpoint"
 )
-
-type Duration time.Duration
-
-func (d Duration) Duration() time.Duration {
-	return time.Duration(d)
-}
-
-func (d *Duration) UnmarshalJSON(data []byte) error {
-	var o interface{}
-
-	if err := json.Unmarshal(data, &o); err != nil {
-		return err
-	}
-
-	switch t := o.(type) {
-	case string:
-		dd, err := time.ParseDuration(t)
-		if err != nil {
-			return err
-		}
-
-		*d = Duration(dd)
-
-	case float64:
-		*d = Duration(int64(t * float64(time.Second)))
-
-	case int64:
-		*d = Duration(t * int64(time.Second))
-	case int:
-		*d = Duration(t * int(time.Second))
-
-	default:
-		return fmt.Errorf("unsupported type %T value: %v", t, t)
-
-	}
-
-	return nil
-}
 
 type Market struct {
 	Symbol string `json:"symbol"`
@@ -150,10 +109,10 @@ func (m Market) FormatPriceCurrency(val fixedpoint.Value) string {
 
 func (m Market) FormatPrice(val fixedpoint.Value) string {
 	// p := math.Pow10(m.PricePrecision)
-	return formatPrice(val, m.TickSize)
+	return FormatPrice(val, m.TickSize)
 }
 
-func formatPrice(price fixedpoint.Value, tickSize fixedpoint.Value) string {
+func FormatPrice(price fixedpoint.Value, tickSize fixedpoint.Value) string {
 	prec := int(math.Round(math.Abs(math.Log10(tickSize.Float64()))))
 	return price.FormatString(prec)
 }

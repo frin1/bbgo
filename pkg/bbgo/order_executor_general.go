@@ -2,12 +2,12 @@ package bbgo
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"go.uber.org/multierr"
 
@@ -38,7 +38,8 @@ type GeneralOrderExecutor struct {
 
 	marginBaseMaxBorrowable, marginQuoteMaxBorrowable fixedpoint.Value
 
-	closing int64
+	disableNotify bool
+	closing       int64
 }
 
 func NewGeneralOrderExecutor(session *ExchangeSession, symbol, strategy, strategyInstanceID string, position *types.Position) *GeneralOrderExecutor {
@@ -64,6 +65,10 @@ func NewGeneralOrderExecutor(session *ExchangeSession, symbol, strategy, strateg
 	}
 
 	return executor
+}
+
+func (e *GeneralOrderExecutor) DisableNotify() {
+	e.disableNotify = true
 }
 
 func (e *GeneralOrderExecutor) startMarginAssetUpdater(ctx context.Context) {
@@ -110,6 +115,10 @@ func (e *GeneralOrderExecutor) marginAssetMaxBorrowableUpdater(ctx context.Conte
 	}
 }
 
+func (e *GeneralOrderExecutor) OrderStore() *OrderStore {
+	return e.orderStore
+}
+
 func (e *GeneralOrderExecutor) ActiveMakerOrders() *ActiveOrderBook {
 	return e.activeMakerOrders
 }
@@ -148,15 +157,17 @@ func (e *GeneralOrderExecutor) Bind() {
 	e.activeMakerOrders.BindStream(e.session.UserDataStream)
 	e.orderStore.BindStream(e.session.UserDataStream)
 
-	// trade notify
-	e.tradeCollector.OnTrade(func(trade types.Trade, profit, netProfit fixedpoint.Value) {
-		Notify(trade)
-	})
+	if !e.disableNotify {
+		// trade notify
+		e.tradeCollector.OnTrade(func(trade types.Trade, profit, netProfit fixedpoint.Value) {
+			Notify(trade)
+		})
 
-	e.tradeCollector.OnPositionUpdate(func(position *types.Position) {
-		log.Infof("position changed: %s", position)
-		Notify(position)
-	})
+		e.tradeCollector.OnPositionUpdate(func(position *types.Position) {
+			log.Infof("position changed: %s", position)
+			Notify(position)
+		})
+	}
 
 	e.tradeCollector.BindStream(e.session.UserDataStream)
 }
@@ -170,6 +181,36 @@ func (e *GeneralOrderExecutor) CancelOrders(ctx context.Context, orders ...types
 	return err
 }
 
+// FastSubmitOrders send []types.SubmitOrder directly to the exchange without blocking wait on the status update.
+// This is a faster version of SubmitOrders(). Created orders will be consumed in newly created goroutine (in non-backteset session).
+// @param ctx: golang context type.
+// @param submitOrders: Lists of types.SubmitOrder to be sent to the exchange.
+// @return *types.SubmitOrder: SubmitOrder with calculated quantity and price.
+// @return error: Error message.
+func (e *GeneralOrderExecutor) FastSubmitOrders(ctx context.Context, submitOrders ...types.SubmitOrder) (types.OrderSlice, error) {
+	formattedOrders, err := e.session.FormatOrders(submitOrders)
+	if err != nil {
+		return nil, err
+	}
+	createdOrders, errIdx, err := BatchPlaceOrder(ctx, e.session.Exchange, formattedOrders...)
+	if len(errIdx) > 0 {
+		return nil, err
+	}
+	if IsBackTesting {
+		e.orderStore.Add(createdOrders...)
+		e.activeMakerOrders.Add(createdOrders...)
+		e.tradeCollector.Process()
+	} else {
+		go func() {
+			e.orderStore.Add(createdOrders...)
+			e.activeMakerOrders.Add(createdOrders...)
+			e.tradeCollector.Process()
+		}()
+	}
+	return createdOrders, err
+
+}
+
 func (e *GeneralOrderExecutor) SubmitOrders(ctx context.Context, submitOrders ...types.SubmitOrder) (types.OrderSlice, error) {
 	formattedOrders, err := e.session.FormatOrders(submitOrders)
 	if err != nil {
@@ -177,6 +218,10 @@ func (e *GeneralOrderExecutor) SubmitOrders(ctx context.Context, submitOrders ..
 	}
 
 	createdOrders, errIdx, err := BatchPlaceOrder(ctx, e.session.Exchange, formattedOrders...)
+	if err != nil {
+		log.WithError(err).Errorf("place order error, will retry orders: %v", errIdx)
+	}
+
 	if len(errIdx) > 0 {
 		createdOrders2, err2 := BatchRetryPlaceOrder(ctx, e.session.Exchange, errIdx, formattedOrders...)
 		if err2 != nil {
@@ -230,20 +275,22 @@ func (e *GeneralOrderExecutor) reduceQuantityAndSubmitOrder(ctx context.Context,
 	var err error
 	for i := 0; i < submitOrderRetryLimit; i++ {
 		q := submitOrder.Quantity.Mul(fixedpoint.One.Sub(quantityReduceDelta))
-		if submitOrder.Side == types.SideTypeSell {
-			if baseBalance, ok := e.session.GetAccount().Balance(e.position.Market.BaseCurrency); ok {
-				q = fixedpoint.Min(q, baseBalance.Available)
-			}
-		} else {
-			if quoteBalance, ok := e.session.GetAccount().Balance(e.position.Market.QuoteCurrency); ok {
-				q = fixedpoint.Min(q, quoteBalance.Available.Div(price))
+		if !e.session.Futures && !e.session.Margin {
+			if submitOrder.Side == types.SideTypeSell {
+				if baseBalance, ok := e.session.GetAccount().Balance(e.position.Market.BaseCurrency); ok {
+					q = fixedpoint.Min(q, baseBalance.Available)
+				}
+			} else {
+				if quoteBalance, ok := e.session.GetAccount().Balance(e.position.Market.QuoteCurrency); ok {
+					q = fixedpoint.Min(q, quoteBalance.Available.Div(price))
+				}
 			}
 		}
 		log.Warnf("retrying order, adjusting order quantity: %v -> %v", submitOrder.Quantity, q)
 
 		submitOrder.Quantity = q
 		if e.position.Market.IsDustQuantity(submitOrder.Quantity, price) {
-			return nil, types.NewZeroAssetError(nil)
+			return nil, types.NewZeroAssetError(fmt.Errorf("dust quantity"))
 		}
 
 		createdOrder, err2 := e.SubmitOrders(ctx, submitOrder)
@@ -260,7 +307,12 @@ func (e *GeneralOrderExecutor) reduceQuantityAndSubmitOrder(ctx context.Context,
 	return nil, multierr.Append(ErrExceededSubmitOrderRetryLimit, err)
 }
 
-func (e *GeneralOrderExecutor) OpenPosition(ctx context.Context, options OpenPositionOptions) (types.OrderSlice, error) {
+// Create new submitOrder from OpenPositionOptions.
+// @param ctx: golang context type.
+// @param options: OpenPositionOptions to control the generated SubmitOrder in a higher level way. Notice that the Price in options will be updated as the submitOrder price.
+// @return *types.SubmitOrder: SubmitOrder with calculated quantity and price.
+// @return error: Error message.
+func (e *GeneralOrderExecutor) NewOrderFromOpenPosition(ctx context.Context, options *OpenPositionOptions) (*types.SubmitOrder, error) {
 	price := options.Price
 	submitOrder := types.SubmitOrder{
 		Symbol:           e.position.Symbol,
@@ -282,9 +334,11 @@ func (e *GeneralOrderExecutor) OpenPosition(ctx context.Context, options OpenPos
 		if options.Long {
 			// use higher price to buy (this ensures that our order will be filled)
 			price = price.Mul(one.Add(options.LimitOrderTakerRatio))
+			options.Price = price
 		} else if options.Short {
 			// use lower price to sell (this ensures that our order will be filled)
 			price = price.Mul(one.Sub(options.LimitOrderTakerRatio))
+			options.Price = price
 		}
 	}
 
@@ -318,14 +372,7 @@ func (e *GeneralOrderExecutor) OpenPosition(ctx context.Context, options OpenPos
 		submitOrder.Side = types.SideTypeBuy
 		submitOrder.Quantity = quantity
 
-		Notify("Opening %s long position with quantity %v at price %v", e.position.Symbol, quantity, price)
-
-		createdOrder, err := e.SubmitOrders(ctx, submitOrder)
-		if err == nil {
-			return createdOrder, nil
-		}
-
-		return e.reduceQuantityAndSubmitOrder(ctx, price, submitOrder)
+		return &submitOrder, nil
 	} else if options.Short {
 		if quantity.IsZero() {
 			var err error
@@ -348,11 +395,40 @@ func (e *GeneralOrderExecutor) OpenPosition(ctx context.Context, options OpenPos
 		submitOrder.Side = types.SideTypeSell
 		submitOrder.Quantity = quantity
 
-		Notify("Opening %s short position with quantity %v at price %v", e.position.Symbol, quantity, price)
-		return e.reduceQuantityAndSubmitOrder(ctx, price, submitOrder)
+		return &submitOrder, nil
 	}
 
 	return nil, errors.New("options Long or Short must be set")
+}
+
+// OpenPosition sends the orders generated from OpenPositionOptions to the exchange by calling SubmitOrders or reduceQuantityAndSubmitOrder.
+// @param ctx: golang context type.
+// @param options: OpenPositionOptions to control the generated SubmitOrder in a higher level way. Notice that the Price in options will be updated as the submitOrder price.
+// @return types.OrderSlice: Created orders with information from exchange.
+// @return error: Error message.
+func (e *GeneralOrderExecutor) OpenPosition(ctx context.Context, options OpenPositionOptions) (types.OrderSlice, error) {
+	submitOrder, err := e.NewOrderFromOpenPosition(ctx, &options)
+	if err != nil {
+		return nil, err
+	}
+	if submitOrder == nil {
+		return nil, nil
+	}
+	price := options.Price
+
+	side := "long"
+	if submitOrder.Side == types.SideTypeSell {
+		side = "short"
+	}
+
+	Notify("Opening %s %s position with quantity %v at price %v", e.position.Symbol, side, submitOrder.Quantity, price)
+
+	createdOrder, err := e.SubmitOrders(ctx, *submitOrder)
+	if err == nil {
+		return createdOrder, nil
+	}
+
+	return e.reduceQuantityAndSubmitOrder(ctx, price, *submitOrder)
 }
 
 // GracefulCancelActiveOrderBook cancels the orders from the active orderbook.
@@ -360,10 +436,11 @@ func (e *GeneralOrderExecutor) GracefulCancelActiveOrderBook(ctx context.Context
 	if activeOrders.NumOfOrders() == 0 {
 		return nil
 	}
+
 	if err := activeOrders.GracefulCancel(ctx, e.session.Exchange); err != nil {
 		// Retry once
 		if err = activeOrders.GracefulCancel(ctx, e.session.Exchange); err != nil {
-			return fmt.Errorf("graceful cancel order error: %w", err)
+			return errors.Wrap(err, "graceful cancel error")
 		}
 	}
 
@@ -371,23 +448,26 @@ func (e *GeneralOrderExecutor) GracefulCancelActiveOrderBook(ctx context.Context
 	return nil
 }
 
-func (e *GeneralOrderExecutor) GracefulCancelOrder(ctx context.Context, order types.Order) error {
+// GracefulCancel cancels all active maker orders if orders are not given, otherwise cancel all the given orders
+func (e *GeneralOrderExecutor) GracefulCancel(ctx context.Context, orders ...types.Order) error {
+	if err := e.activeMakerOrders.GracefulCancel(ctx, e.session.Exchange, orders...); err != nil {
+		return errors.Wrap(err, "graceful cancel error")
+	}
+
+	return nil
+}
+
+// FastCancel cancels all active maker orders if orders is not given, otherwise cancel the given orders
+func (e *GeneralOrderExecutor) FastCancel(ctx context.Context, orders ...types.Order) error {
 	if e.activeMakerOrders.NumOfOrders() == 0 {
 		return nil
 	}
-	if err := e.activeMakerOrders.Cancel(ctx, e.session.Exchange, order); err != nil {
-		// Retry once
-		if err = e.activeMakerOrders.Cancel(ctx, e.session.Exchange, order); err != nil {
-			return fmt.Errorf("cancel order error: %w", err)
-		}
-	}
-	e.tradeCollector.Process()
-	return nil
-}
 
-// GracefulCancel cancels all active maker orders
-func (e *GeneralOrderExecutor) GracefulCancel(ctx context.Context) error {
-	return e.GracefulCancelActiveOrderBook(ctx, e.activeMakerOrders)
+	if err := e.activeMakerOrders.FastCancel(ctx, e.session.Exchange, orders...); err != nil {
+		return errors.Wrap(err, "fast cancel order error")
+	}
+
+	return nil
 }
 
 // ClosePosition closes the current position by a percentage.
@@ -407,22 +487,39 @@ func (e *GeneralOrderExecutor) ClosePosition(ctx context.Context, percentage fix
 	atomic.AddInt64(&e.closing, 1)
 	defer atomic.StoreInt64(&e.closing, 0)
 
-	// check base balance and adjust the close position order
-	if e.position.IsLong() {
-		if baseBalance, ok := e.session.Account.Balance(e.position.Market.BaseCurrency); ok {
-			submitOrder.Quantity = fixedpoint.Min(submitOrder.Quantity, baseBalance.Available)
+	if e.session.Futures { // Futures: Use base qty in e.position
+		submitOrder.Quantity = e.position.GetBase().Abs()
+		submitOrder.ReduceOnly = true
+		if e.position.IsLong() {
+			submitOrder.Side = types.SideTypeSell
+		} else if e.position.IsShort() {
+			submitOrder.Side = types.SideTypeBuy
+		} else {
+			submitOrder.Side = types.SideTypeSelf
+			submitOrder.Quantity = fixedpoint.Zero
 		}
+
 		if submitOrder.Quantity.IsZero() {
-			return fmt.Errorf("insufficient base balance, can not sell: %+v", submitOrder)
+			return fmt.Errorf("no position to close: %+v", submitOrder)
 		}
-	} else if e.position.IsShort() {
-		// TODO: check quote balance here, we also need the current price to validate, need to design.
-		/*
-			if quoteBalance, ok := e.session.Account.Balance(e.position.Market.QuoteCurrency); ok {
-				// AdjustQuantityByMaxAmount(submitOrder.Quantity, quoteBalance.Available)
-				// submitOrder.Quantity = fixedpoint.Min(submitOrder.Quantity,)
+	} else { // Spot and spot margin
+		// check base balance and adjust the close position order
+		if e.position.IsLong() {
+			if baseBalance, ok := e.session.Account.Balance(e.position.Market.BaseCurrency); ok {
+				submitOrder.Quantity = fixedpoint.Min(submitOrder.Quantity, baseBalance.Available)
 			}
-		*/
+			if submitOrder.Quantity.IsZero() {
+				return fmt.Errorf("insufficient base balance, can not sell: %+v", submitOrder)
+			}
+		} else if e.position.IsShort() {
+			// TODO: check quote balance here, we also need the current price to validate, need to design.
+			/*
+				if quoteBalance, ok := e.session.Account.Balance(e.position.Market.QuoteCurrency); ok {
+					// AdjustQuantityByMaxAmount(submitOrder.Quantity, quoteBalance.Available)
+					// submitOrder.Quantity = fixedpoint.Min(submitOrder.Quantity,)
+				}
+			*/
+		}
 	}
 
 	tagStr := strings.Join(tags, ",")

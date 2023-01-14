@@ -140,7 +140,7 @@ func (s *StandardIndicatorSet) BOLL(iw types.IntervalWindow, bandWidth float64) 
 	iwb := types.IntervalWindowBandWidth{IntervalWindow: iw, BandWidth: bandWidth}
 	inc, ok := s.iwbIndicators[iwb]
 	if !ok {
-		inc = &indicator.BOLL{IntervalWindow: iw, K: bandWidth}
+		inc = &indicator.BOLL{IntervalWindow: iw, K: bandWidth, SMA: &indicator.SMA{IntervalWindow: iw}}
 		s.initAndBind(inc, iw.Interval)
 
 		if debugBOLL {
@@ -165,6 +165,11 @@ func (s *StandardIndicatorSet) MACD(iw types.IntervalWindow, shortPeriod, longPe
 	s.macdIndicators[config] = inc
 	s.initAndBind(inc, config.IntervalWindow.Interval)
 	return inc
+}
+
+func (s *StandardIndicatorSet) RSI(iw types.IntervalWindow) *indicator.RSI {
+	inc := s.allocateSimpleIndicator(&indicator.RSI{IntervalWindow: iw}, iw, "rsi")
+	return inc.(*indicator.RSI)
 }
 
 // GHFilter is a helper function that returns the G-H (alpha beta) digital filter of the given interval and the window size.

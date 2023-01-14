@@ -75,7 +75,9 @@ type ExecutionReportEvent struct {
 	OrderPrice fixedpoint.Value `json:"p"`
 	StopPrice  fixedpoint.Value `json:"P"`
 
-	IsOnBook bool `json:"w"`
+	IsOnBook     bool                       `json:"w"`
+	WorkingTime  types.MillisecondTimestamp `json:"W"`
+	TrailingTime types.MillisecondTimestamp `json:"D"`
 
 	IsMaker bool `json:"m"`
 	Ignore  bool `json:"M"`
@@ -350,6 +352,11 @@ func parseWebSocketEvent(message []byte) (interface{}, error) {
 		err = json.Unmarshal([]byte(message), &event)
 		return &event, err
 
+	case "aggTrade":
+		var event AggTradeEvent
+		err = json.Unmarshal([]byte(message), &event)
+		return &event, err
+
 	default:
 		id := val.GetInt("id")
 		if id > 0 {
@@ -533,7 +540,64 @@ func (e *MarketTradeEvent) Trade() types.Trade {
 		Side:          side,
 		Price:         e.Price,
 		Quantity:      e.Quantity,
-		QuoteQuantity: e.Quantity,
+		QuoteQuantity: e.Quantity.Mul(e.Price),
+		IsBuyer:       isBuyer,
+		IsMaker:       e.IsMaker,
+		Time:          types.Time(tt),
+		Fee:           fixedpoint.Zero,
+		FeeCurrency:   "",
+	}
+}
+
+type AggTradeEvent struct {
+	EventBase
+	Symbol         string           `json:"s"`
+	Quantity       fixedpoint.Value `json:"q"`
+	Price          fixedpoint.Value `json:"p"`
+	FirstTradeId   int64            `json:"f"`
+	LastTradeId    int64            `json:"l"`
+	OrderTradeTime int64            `json:"T"`
+	IsMaker        bool             `json:"m"`
+	Dummy          bool             `json:"M"`
+}
+
+/*
+aggregate trade
+{
+  "e": "aggTrade",  // Event type
+  "E": 123456789,   // Event time
+  "s": "BNBBTC",    // Symbol
+  "a": 12345,       // Aggregate trade ID
+  "p": "0.001",     // Price
+  "q": "100",       // Quantity
+  "f": 100,         // First trade ID
+  "l": 105,         // Last trade ID
+  "T": 123456785,   // Trade time
+  "m": true,        // Is the buyer the market maker?
+  "M": true         // Ignore
+}
+*/
+
+func (e *AggTradeEvent) Trade() types.Trade {
+	tt := time.Unix(0, e.OrderTradeTime*int64(time.Millisecond))
+	var side types.SideType
+	var isBuyer bool
+	if e.IsMaker {
+		side = types.SideTypeSell
+		isBuyer = false
+	} else {
+		side = types.SideTypeBuy
+		isBuyer = true
+	}
+	return types.Trade{
+		ID:            uint64(e.LastTradeId),
+		Exchange:      types.ExchangeBinance,
+		Symbol:        e.Symbol,
+		OrderID:       0,
+		Side:          side,
+		Price:         e.Price,
+		Quantity:      e.Quantity,
+		QuoteQuantity: e.Quantity.Mul(e.Price),
 		IsBuyer:       isBuyer,
 		IsMaker:       e.IsMaker,
 		Time:          types.Time(tt),
