@@ -217,36 +217,6 @@ func AddReportIndexRun(outputDirectory string, run Run) error {
 		return err
 	}
 
-	// Sanitize run.Config to ensure we don't accidentally persist runtime references.
-	// Without this, large recursive graphs (sessions holding pointers to streams, accounts, etc.)
-	// could bloat index.json and even trigger custom JSON hooks that were previously recursive.
-	if run.Config != nil {
-		// Create a shallow copy and drop session runtime references by reconstructing
-		// only the raw session configs map (if present) while keeping strategy config.
-		cloned := *run.Config
-		// Sessions in bbgo.Config are usually a map[string]*bbgo.ExchangeSession.
-		// We'll rebuild a lightweight map containing only the ExchangeSessionConfig part
-		// by marshaling and unmarshaling through the custom (config-only) JSON hooks.
-		if len(cloned.Sessions) > 0 {
-			for name, s := range cloned.Sessions {
-				if s == nil {
-					continue
-				}
-				// Force re-marshal to strip runtime fields.
-				b, err := json.Marshal(s)
-				if err != nil {
-					continue
-				}
-				var cleaned bbgo.ExchangeSession
-				if err := json.Unmarshal(b, &cleaned); err != nil {
-					continue
-				}
-				cloned.Sessions[name] = &cleaned
-			}
-		}
-		run.Config = &cloned
-	}
-
 	reportIndex.Runs = append(reportIndex.Runs, run)
 	return writeReportIndexLocked(indexFile, reportIndex)
 }

@@ -71,7 +71,9 @@ func (sessions ExchangeSessionMap) CollectMarkets(preferredSessions []string) ty
 	sort.Sort(sort.Reverse(sort.StringSlice(preferredSessions)))
 	for _, sessionName := range preferredSessions {
 		if session, ok := sessions[sessionName]; ok {
-			allMarkets.Merge(session.Markets())
+			for symbol, market := range session.Markets() {
+				allMarkets[symbol] = market
+			}
 		}
 	}
 
@@ -320,23 +322,17 @@ func (session *ExchangeSession) GetAccountValueCalculator() *AccountValueCalcula
 	return session.AccountValueCalculator
 }
 
-// MarshalJSON customizes JSON encoding of ExchangeSession by serializing only the configuration
-// part. Runtime fields (streams, connectivity, caches, statistics) are intentionally excluded
-// because they are not meant to be persisted and can create huge or recursive object graphs.
-func (session *ExchangeSession) MarshalJSON() ([]byte, error) {
-	return json.Marshal(&session.ExchangeSessionConfig)
-}
-
-// UnmarshalJSON decodes only the configuration portion to avoid infinite recursion and
-// reconstruction of runtime internals. Runtime fields are re-initialized by normal
-// environment/session bootstrap code (Init, InitExchange, etc.).
 func (session *ExchangeSession) UnmarshalJSON(data []byte) error {
-	type raw ExchangeSessionConfig
-	var cfg raw
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	// unmarshal the config first
+	if err := json.Unmarshal(data, &session.ExchangeSessionConfig); err != nil {
 		return fmt.Errorf("unmarshal exchange session config: %w", err)
 	}
-	session.ExchangeSessionConfig = ExchangeSessionConfig(cfg)
+
+	// then unmarshal the rest of the fields
+	if err := json.Unmarshal(data, session); err != nil {
+		return fmt.Errorf("unmarshal exchange session: %w", err)
+	}
+
 	return nil
 }
 
@@ -613,7 +609,7 @@ func (session *ExchangeSession) Init(ctx context.Context, environ *Environment) 
 	} else {
 		session.MarketDataStream.OnKLineClosed(func(kline types.KLine) {
 			if _, ok := session.startPrices[kline.Symbol]; !ok {
-				session.startPrices[kline.Symbol] = kline.Open
+				session.setLastPrice(kline.Symbol, kline.Open)
 			}
 
 			session.setLastPrice(kline.Symbol, kline.Close)
